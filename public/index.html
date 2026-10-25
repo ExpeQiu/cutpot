@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark"><title>CutPot · 自动组片工作台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app"><div class="boot">CutPot <span>正在打开本地工作台…</span></div></div>
+  <input id="files" type="file" multiple accept="video/*,audio/*,image/png,image/jpeg,image/webp" hidden>
+  <input id="project-file" type="file" accept=".json,application/json" hidden>
+  <div id="toast" role="status"></div>
+  <dialog id="export-dialog"></dialog>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

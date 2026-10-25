@@ -1,0 +1,8 @@
+node_modules/
+.cutpot/
+.DS_Store
+*.log
+**/azure-speech.json
+**/azure-speech.json.*.tmp
+/storyboard/
+/archive/

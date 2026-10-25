@@ -1,0 +1,15 @@
+{
+  "name": "已混音片段组片示例",
+  "resolution": "1280x720",
+  "fps": 25,
+  "clips": [
+    {
+      "file": "../clips/S01.mp4",
+      "title": "挥手邀请",
+      "sourceIn": 0,
+      "duration": 5,
+      "subtitle": "欢迎来到今天的故事。",
+      "muted": false
+    }
+  ]
+}

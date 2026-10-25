@@ -1,0 +1,64 @@
+{
+  "name": "短片制作清单示例",
+  "resolution": "1280x720",
+  "fps": 25,
+  "total_seconds": 5,
+  "require_audio": true,
+  "shots": [
+    {
+      "id": "S01",
+      "title": "挥手邀请",
+      "start": 0,
+      "end": 5,
+      "edit_seconds": 5,
+      "duration_frames": 125,
+      "method": "first_last_frame",
+      "first": "../frames/S01_first.png",
+      "last": "../frames/S01_last.png",
+      "input_sha256": {},
+      "action": "从已有举手姿态小幅挥手一次，站稳微笑",
+      "generation_seconds": 6,
+      "output": "../clips/S01.mp4",
+      "audio": {
+        "mode": "mixed",
+        "narration_start": 0,
+        "narration_end": 4.8
+      },
+      "task": {
+        "attempt": 1,
+        "service": "autodl-cli",
+        "job_id": null,
+        "status": "not_submitted",
+        "model": null
+      },
+      "acceptance": {
+        "technical": "pending",
+        "visual": "pending",
+        "listening": "pending",
+        "notes": []
+      },
+      "video_prompt": "固定机位，角色从已有举手姿态小幅挥手一次，回到稳定姿态；文字和旁白后期添加",
+      "narration": "欢迎一起来看看。",
+      "revision": {
+        "reason": null,
+        "original_output": null,
+        "replacement_output": null,
+        "task_id": null,
+        "model": null,
+        "accepted": false
+      }
+    }
+  ],
+  "story_invariants": [
+    "单一角色身份、服装和场景保持一致"
+  ],
+  "version": "v01",
+  "delivery": {
+    "subtitle_version": null,
+    "clean_version": null,
+    "srt": null,
+    "project": null,
+    "archive_path": null,
+    "sha256_verified": false
+  }
+}

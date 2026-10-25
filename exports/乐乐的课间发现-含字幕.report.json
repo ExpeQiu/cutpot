@@ -1,0 +1,10 @@
+{
+  "expectedDuration": 60,
+  "burnSubtitles": true,
+  "type": "video",
+  "duration": 60,
+  "width": 1920,
+  "height": 1080,
+  "hasAudio": true,
+  "codec": "h264"
+}

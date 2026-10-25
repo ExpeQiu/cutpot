@@ -1,0 +1,2 @@
+# Optional isolated runtime for general-purpose Edge TTS; not a native child voice provider.
+edge-tts==7.3.1

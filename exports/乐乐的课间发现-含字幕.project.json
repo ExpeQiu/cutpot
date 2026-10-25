@@ -1,0 +1,205 @@
+{
+  "version": 1,
+  "id": "01a5e7d7-4941-4e42-b89d-1ad4501600d8",
+  "name": "乐乐的课间发现",
+  "fps": 25,
+  "width": 1920,
+  "height": 1080,
+  "clips": [
+    {
+      "id": "1c61a790-ca1a-4a0e-ab13-772dcd9f4325",
+      "assetId": "109b80d0-b04d-4249-9c20-b8d0ae758988",
+      "title": "乐乐开场",
+      "duration": 2,
+      "sourceIn": 0,
+      "subtitle": "大家好，我是乐乐！",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "211f11e0-a888-47e6-895e-b133b3da3030",
+      "assetId": "0bda38b0-f23a-4926-aa1d-672504c07e11",
+      "title": "课间怎么玩",
+      "duration": 3,
+      "sourceIn": 0,
+      "subtitle": "课间怎么玩才安全？",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "10e6e249-94d0-4998-9182-e2b391144a9a",
+      "assetId": "2a73d61f-e9b6-42af-90ef-88fe5d3372fe",
+      "title": "翻花绳",
+      "duration": 2,
+      "sourceIn": 0,
+      "subtitle": "翻花绳、下飞行棋，",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "29dccebb-9b59-4584-8eb7-cfa3ea5783e3",
+      "assetId": "a452d4b2-a027-4dd0-804f-32f16d52fc16",
+      "title": "飞行棋",
+      "duration": 2,
+      "sourceIn": 0,
+      "subtitle": "",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "7f198bb9-244b-4033-9bf2-2e07db9f31c0",
+      "assetId": "6ba67b4d-ad15-4c4b-b1ff-9df095f4f1f2",
+      "title": "跳绳",
+      "duration": 3,
+      "sourceIn": 0,
+      "subtitle": "跳跳绳、看看新叶，",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "8a5bf625-8228-40e7-81a1-90352620c0d3",
+      "assetId": "e3374648-63a4-4e95-935f-7b367b63b0b9",
+      "title": "观察嫩叶",
+      "duration": 2,
+      "sourceIn": 0,
+      "subtitle": "课间真快乐！",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "b64f1dc5-3141-4778-b708-340588928963",
+      "assetId": "a49e3db2-bcd5-43d0-ab49-0a81dbeb6490",
+      "title": "门口相遇",
+      "duration": 4,
+      "sourceIn": 0,
+      "subtitle": "",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "6e0e4a9a-25b9-43f4-b1b6-9f97e84a8107",
+      "assetId": "ab913ddd-e55e-4618-aa3a-572b95a1af08",
+      "title": "先停一停",
+      "duration": 1.52,
+      "sourceIn": 0,
+      "subtitle": "小心，先停一停！",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "c220f9dc-e607-4b87-8608-ff00f20449e7",
+      "assetId": "4ea47ebd-a7f7-4fed-ac9b-d5ba1cd648a1",
+      "title": "站稳等待",
+      "duration": 1.48,
+      "sourceIn": 0,
+      "subtitle": "",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "d72cf070-96ba-464b-bb29-4315fb917128",
+      "assetId": "2d26b8a1-b9eb-45b4-9910-d23f4c601a8b",
+      "title": "温和提醒",
+      "duration": 4,
+      "sourceIn": 0,
+      "subtitle": "拿水杯，慢慢走；",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "5c9a6349-c0c4-4b3c-8f51-1fee082e9750",
+      "assetId": "e8f8cd02-7655-4573-98e3-287aad801ce2",
+      "title": "礼让通过",
+      "duration": 4,
+      "sourceIn": 0,
+      "subtitle": "经过门口先看看，等同学通过再走。",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "ae2d087f-c5a0-410c-81dd-d1eab8f229e5",
+      "assetId": "d483af87-92de-422a-a7d8-78a1e33b94ea",
+      "title": "平稳上楼",
+      "duration": 4,
+      "sourceIn": 0,
+      "subtitle": "扶好扶手，慢慢上楼。",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "6fffe13e-60eb-49d1-b7ce-280e5a0502c0",
+      "assetId": "48501718-de7c-4991-a8e9-2434f430b19e",
+      "title": "扶手边的提醒",
+      "duration": 2,
+      "sourceIn": 0,
+      "subtitle": "危险！",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "29f0d428-4af3-428e-bd57-05a945040601",
+      "assetId": "abde9875-7861-4360-a709-b0568307e24d",
+      "title": "立即制止",
+      "duration": 2,
+      "sourceIn": 0,
+      "subtitle": "先停下！",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "3e49e42a-0ab4-4d57-a564-b483e7c23538",
+      "assetId": "d0a1eb81-4755-4049-9c88-1507a13181ec",
+      "title": "停止动作",
+      "duration": 2,
+      "sourceIn": 0,
+      "subtitle": "扶手帮助我们站稳，",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "83e024e9-4cc5-4282-a467-c313931ff990",
+      "assetId": "d37f34fc-4e12-4553-bfd7-a22cce6df9e0",
+      "title": "解释规则",
+      "duration": 3,
+      "sourceIn": 0,
+      "subtitle": "可不能当滑梯！",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "b4079d01-15e3-4fd5-a7c2-22ca3bbc4fd9",
+      "assetId": "49ba5956-38a4-4a79-a440-2fee4156fd64",
+      "title": "记住安全规则",
+      "duration": 10,
+      "sourceIn": 0,
+      "subtitle": "上下楼梯慢慢走，扶手不能攀爬、滑行。",
+      "muted": true,
+      "locked": false
+    },
+    {
+      "id": "c6aba83c-e853-49f7-901b-7028297ecaed",
+      "assetId": "891d827e-bd78-441e-adac-3bddcb53084b",
+      "title": "课堂提问",
+      "duration": 3,
+      "sourceIn": 0,
+      "subtitle": "现在，他应该怎么做？",
+      "muted": true,
+      "locked": true
+    },
+    {
+      "id": "f930e61b-69cc-4ce9-9c10-5629a57f7a73",
+      "assetId": "891d827e-bd78-441e-adac-3bddcb53084b",
+      "title": "安静思考",
+      "duration": 5,
+      "sourceIn": 0,
+      "subtitle": "如果你是这位同学，接下来应该怎么做？",
+      "muted": true,
+      "locked": true
+    }
+  ],
+  "narration": null,
+  "music": null,
+  "musicVolume": 0.12,
+  "updatedAt": "2026-10-20T00:12:53.945Z",
+  "burnSubtitles": true
+}
