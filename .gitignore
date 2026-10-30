@@ -7,3 +7,5 @@ node_modules/
 /storyboard/
 /archive/
 /releases/
+# 本地 TTS 权重（GPT-SoVITS 等），体积大且不入库
+/model/

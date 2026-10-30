@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {validateProject} from './project.js';
 
 const uuid=value=>typeof value==='string'&&/^[a-f0-9-]{36}$/i.test(value);
@@ -5,6 +6,25 @@ const assert=(condition,message)=>{if(!condition)throw new Error(message);};
 const list=(value,max,label)=>{assert(Array.isArray(value)&&value.length<=max,`${label}格式无效`);return value;};
 const cleanText=(value,max=12000)=>String(value??'').slice(0,max);
 const fields=(object,keys)=>Object.fromEntries(keys.filter(key=>object[key]!==undefined).map(key=>[key,object[key]]));
+const extOf=(file,type)=>{
+  const ext=path.extname(file||'').toLowerCase();
+  if(ext)return ext;
+  return type==='image'?'.png':type==='audio'?'.wav':'.mp4';
+};
+
+export function collectUsedAssetIds(project,creation){
+  const ids=new Set();
+  const add=id=>{if(id)ids.add(id);};
+  for(const clip of project?.clips||[])add(clip.assetId);
+  for(const key of ['narration','music'])add(project?.[key]);
+  const walk=source=>{
+    for(const id of source?.references||[])add(id);
+    for(const shot of source?.shots||[])for(const v of shot.versions||[])add(v.assetId);
+    for(const seg of source?.segments||[])for(const v of seg.versions||[]){add(v.assetId);add(v.firstAssetId);add(v.lastAssetId);}
+  };
+  if(creation){walk(creation);for(const archive of creation.archives||[])walk(archive);}
+  return ids;
+}
 
 export function projectFile(project,creation,assets){
   // Asset IDs and hashes allow relinking in another local library. Media and paths
@@ -13,6 +33,24 @@ export function projectFile(project,creation,assets){
   for(const job of data.creation?.jobs||[])delete job.input;
   data.assets=assets.map(a=>fields(a,['id','name','type','sha256']));
   return data;
+}
+
+/** Self-contained package manifest: project JSON + relative media file map. */
+export function projectPackage(project,creation,assets){
+  const data=projectFile(project,creation,assets);
+  const used=collectUsedAssetIds(data.project,data.creation);
+  const media=[];
+  data.assets=[];
+  for(const asset of assets){
+    if(!used.has(asset.id))continue;
+    assert(asset.path&&asset.sha256,`素材缺少可打包信息：${asset.name||asset.id}`);
+    const file=`media/${asset.id}${extOf(asset.path,asset.type)}`;
+    data.assets.push({...fields(asset,['id','name','type','sha256']),file});
+    media.push({id:asset.id,name:asset.name,type:asset.type,sha256:asset.sha256,path:asset.path,file});
+  }
+  assert(data.assets.length===used.size,`有 ${used.size-data.assets.length} 个引用素材不在素材库中`);
+  data.bundle='media';
+  return {manifest:data,media};
 }
 
 export function readProjectFile(input,assets){
@@ -36,7 +74,8 @@ export function readProjectFile(input,assets){
   const source=input.creation;
   assert(source.version===1&&source.projectId===project.id,'分镜与剪辑工程不匹配');
   const settings=source.settings;
-  assert(settings&&['mock','live'].includes(settings.mode)&&['16:9','9:16','1:1'].includes(settings.ratio)&&['2k','4k'].includes(settings.resolution)&&Number.isInteger(settings.candidates)&&settings.candidates>=1&&settings.candidates<=10,'工程生成设置无效');
+  const videoProvider=settings?.videoProvider||'autodl';
+  assert(settings&&['mock','live'].includes(settings.mode)&&['16:9','9:16','1:1'].includes(settings.ratio)&&['2k','4k'].includes(settings.resolution)&&Number.isInteger(settings.candidates)&&settings.candidates>=1&&settings.candidates<=10&&['autodl','dreamina'].includes(videoProvider),'工程生成设置无效');
   const versions=(item,type)=>{
     const seen=new Set();
     const result=list(item.versions,1000,'候选版本').map(v=>{
@@ -71,7 +110,7 @@ export function readProjectFile(input,assets){
     assert(segments.length===Math.max(0,shots.length-1)&&segments.every((s,i)=>s.fromShotId===shots[i].id&&s.toShotId===shots[i+1].id),'视频首尾帧顺序与分镜不匹配');
     return {shots,segments};
   };
-  const creation={version:1,projectId:project.id,revision:0,script:cleanText(source.script,50000),style:cleanText(source.style,4000),settings:fields(settings,['mode','ratio','resolution','candidates']),references:list(source.references,10,'主体参考图').map(id=>resolve(id,'image')),...collection(source)};
+  const creation={version:1,projectId:project.id,revision:0,script:cleanText(source.script,50000),style:cleanText(source.style,4000),settings:{...fields(settings,['mode','ratio','resolution','candidates']),videoProvider},references:list(source.references,10,'主体参考图').map(id=>resolve(id,'image')),...collection(source)};
   creation.archives=list(source.archives||[],200,'分镜历史').map(a=>{assert(uuid(a.id),'分镜历史 ID 无效');return {id:a.id,createdAt:cleanText(a.createdAt,64),script:cleanText(a.script,50000),...collection(a)};});
   creation.jobs=list(source.jobs||[],10000,'任务记录').map(j=>{
     assert(uuid(j.id)&&uuid(j.targetId)&&['image','video'].includes(j.kind),'生成任务记录无效');

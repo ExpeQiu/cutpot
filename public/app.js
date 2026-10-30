@@ -1,5 +1,5 @@
 import {timeline,timelineDuration,activeAt,transitionTypes,speedOf,sourceOut,normalizeTransitions,splitAt,trimEdge} from './timeline.js';
-import {saveProjectFile,importProjectFile} from './project-io.js';
+import {saveProjectFile,importProjectFile,createNewProject} from './project-io.js';
 const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => crypto.randomUUID();
@@ -110,12 +110,12 @@ function render(){
     <header class="top"><div class="brand"><span class="brand-mark">c</span>CutPot</div><div class="divider"></div>
       <input class="project-name" id="project-name" aria-label="项目名称" value="${esc(project.name)}"><span class="save-state" id="save-state">${revision===savedRevision?'已保存到本机':'等待保存'}</span>
       <nav class="pipeline-nav" aria-label="创作流水线"><a href="/storyboard">01 分镜图</a><a href="/videos">02 首尾帧视频</a><a href="/editor" aria-current="page">03 剪辑导出</a></nav><div class="spacer"></div><span class="local-badge">本地工作台 · ${engine?'渲染引擎就绪':'未检测到 FFmpeg'}</span>
-      <div class="project-file-actions" role="group" aria-label="工程文件"><button class="small" data-action="download-project">保存工程</button><button class="small" data-action="open-project">导入工程</button></div>
+      <div class="project-file-actions" role="group" aria-label="工程文件"><button class="small" data-action="new-project">新增项目</button><button class="small" data-action="download-project">保存工程</button><button class="small" data-action="open-project">导入工程</button></div>
       <button class="primary" data-action="export">导出视频 ↗</button></header>
     <nav class="rail" aria-label="工作区"><button class="nav-item ${filter!=='audio'?'active':''}" data-action="nav-media">${icon('media')}素材</button><button class="nav-item ${filter==='audio'?'active':''}" data-action="nav-audio">${icon('audio')}声音</button><button class="nav-item" data-action="tts">${icon('audio')}自动配音</button><button class="nav-item" data-action="jobs">${icon('export')}导出</button><div class="rail-bottom">v0.9</div></nav>
     <aside class="library" id="drop-zone"><div class="panel-head"><h2>素材库 <span class="count">${assets.length}</span></h2><button class="ghost small" data-action="upload">＋ 导入</button></div>
       <div class="library-tools"><input id="search" placeholder="搜索素材名称…" aria-label="搜索素材" value="${esc(query)}"><div class="library-tabs">${[['all','全部'],['video','视频'],['image','图片'],['audio','音频']].map(([id,name])=>`<button class="filter ${filter===id?'active':''}" data-filter="${id}">${name}</button>`).join('')}</div></div>
-      <div class="asset-list" id="asset-list"></div><div class="library-foot"><button class="small ghost" data-action="demo">载入乐乐示例</button><button class="small ghost" data-action="new">新建工程</button></div></aside>
+      <div class="asset-list" id="asset-list"></div><div class="library-foot"><button class="small ghost" data-action="demo">载入乐乐示例</button><button class="small ghost" data-action="new-project">新增项目</button></div></aside>
     <section class="preview-panel"><div class="preview-head"><span>成片预览 <span id="preview-shot" class="muted"></span></span><span class="tag">${project.width} × ${project.height} · ${project.fps} FPS</span></div><div class="stage-wrap"><div class="stage" id="stage"></div></div>
       <div class="preview-transport"><div class="time-display" id="time-display"></div><div class="play-controls"><button data-action="previous" aria-label="上一个镜头">‹</button><button class="play" data-action="play" id="play" aria-label="播放或暂停">▶</button><button data-action="next" aria-label="下一个镜头">›</button></div><button class="ghost small caption-toggle" data-action="captions">字幕预览 ${captions?'开':'关'}</button></div>
       <audio id="voice-audio" preload="metadata"></audio><audio id="music-audio" preload="metadata" loop></audio></section>
@@ -331,6 +331,19 @@ async function action(name){
     if(name==='upload')$('#files').click();
     if(name==='open-project')$('#project-file').click();
     if(name==='download-project')await saveProjectFile({flush:save,notify:toast});
+    if(name==='new-project'||name==='new'){
+      pause();
+      await createNewProject({
+        flush:async()=>{await saving.catch(()=>{});clearTimeout(saveTimer);await save();},
+        notify:toast,currentName:project.name,
+        onCreated:async result=>{
+          clearTimeout(saveTimer);undo=[];redo=[];revision=savedRevision=0;
+          project=result.project;projectServerRevision=result.projectRevision;
+          if(result.assets)assets=result.assets;
+          selected=null;position=0;dirty();render();
+        }
+      });
+    }
     if(name==='split'){const c=current();if(c)change(()=>{const right=splitAt(project,c.id,position,uid());selected=right.id;});}
     if(name==='trim-in')trimToPlayhead('in');
     if(name==='trim-out')trimToPlayhead('out');
@@ -344,7 +357,6 @@ async function action(name){
     if(name==='captions'){captions=!captions;pause();render();}
     if(name==='nav-media'||name==='nav-audio'){filter=name==='nav-audio'?'audio':'all';pause();render();}
     if(name==='demo'){if(project.clips.length&&!confirm('载入示例会替换当前时间线。请先保存工程以便恢复。'))return;pause();await saving.catch(()=>{});clearTimeout(saveTimer);const data=await send('/api/demo',{});history();project=data.project;projectServerRevision=data.projectRevision;assets=data.assets;selected=project.clips[0].id;position=0;dirty();render();toast('已载入 60 秒静态分镜预演，尚未生成配音。');}
-    if(name==='new'){if(project.clips.length&&!confirm('新建空工程？素材库会保留，当前时间线可通过撤销恢复。'))return;change(()=>{project={version:1,id:uid(),name:'未命名项目',fps:25,width:1920,height:1080,clips:[],narration:null,music:null,musicVolume:.12};selected=null;position=0;});}
     if(name==='arrange'){pause();history();project=await send('/api/arrange',project);dirty();position=0;render();toast('已按分镜 / shot 编号排序，锁定位置保持不变。');}
     if(name==='undo'&&undo.length){pause();redo.push(snapshot());restore(undo.pop());dirty();render();}
     if(name==='redo'&&redo.length){pause();undo.push(snapshot());restore(redo.pop());dirty();render();}

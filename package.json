@@ -11,7 +11,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
-    "check": "node --check bin/cutpot-cli.js && node --check src/cli.js && node --check src/server.js && node --check src/render.js && node --check src/project.js && node --check src/tts.js && node --check src/tts-config.js && node --check public/app.js && node --check public/timeline.js && node --check public/project-io.js && node --check src/project-file.js && node --check src/pipeline.js && node --check src/generation.js && node --check public/pipeline.js"
+    "check": "node --check bin/cutpot-cli.js && node --check src/cli.js && node --check src/manifest.js && node --check src/server.js && node --check src/render.js && node --check src/project.js && node --check src/tts.js && node --check src/tts-config.js && node --check public/app.js && node --check public/timeline.js && node --check public/project-io.js && node --check src/project-file.js && node --check src/zip-store.js && node --check src/project-workspace.js && node --check src/pipeline.js && node --check src/generation.js && node --check public/pipeline.js"
   },
   "engines": {
     "node": ">=22"

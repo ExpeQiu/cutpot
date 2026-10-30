@@ -4,8 +4,16 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile, chmod } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { command, imageArgs, videoArgs, parseResult } from '../src/generation.js';
+import { command, imageArgs, videoArgs, dreaminaVideoArgs, parseResult, isDownloadedMediaName } from '../src/generation.js';
 import { splitScript } from '../src/pipeline.js';
+
+test('download listing ignores AppleDouble and hidden sidecars', () => {
+  assert.equal(isDownloadedMediaName('candidate.png', 'image'), true);
+  assert.equal(isDownloadedMediaName('._candidate.png', 'image'), false);
+  assert.equal(isDownloadedMediaName('.DS_Store', 'image'), false);
+  assert.equal(isDownloadedMediaName('video.mp4', 'video'), true);
+  assert.equal(isDownloadedMediaName('._video.mp4', 'video'), false);
+});
 
 test('script splitting preserves all story content and avoids invented shots', () => {
   const script='乐乐走进教室。\n\n同学们一起下棋。\n\n放学后回家。';
@@ -21,6 +29,9 @@ test('live adapters enforce first/last mode and pass dangerous prompts as litera
   assert.equal(args[args.indexOf('--play')+1],'first_last_frame');assert.equal(args[args.indexOf('--prompt')+1],prompt);
   assert.equal(args.includes('--workflow'),false);
   assert.throws(()=>videoArgs({input:{firstPath:'/tmp/first.png'}}),/首尾帧/);
+  const dreamina=dreaminaVideoArgs({input:{prompt,firstPath:'/tmp/first.png',lastPath:'/tmp/last.png',duration:5,ratio:'16:9',videoResolution:'720p'}});
+  assert.equal(dreamina[0],'frames2video');assert.equal(dreamina[dreamina.indexOf('--video_resolution')+1],'720p');
+  assert.throws(()=>dreaminaVideoArgs({input:{firstPath:'/tmp/first.png',lastPath:'/tmp/last.png',duration:3,ratio:'16:9'}}),/4–15/);
   const image=imageArgs({input:{references:['/tmp/ref.png'],prompt,negativePrompt:'文字',resolution:'2k',ratio:'9:16',candidates:4}});
   assert.equal(image[0],'image2image');assert.equal(image[image.indexOf('--generate_num')+1],'4');
   assert.equal(parseResult('log\n{\n"submit_id":"known-id"\n}\n').submit_id,'known-id');
@@ -45,7 +56,10 @@ test('pipeline real media roundtrip, stale propagation, conflict protection, han
     let s=await ok({action:'split',script:'乐乐进教室。\n\n同学一起下棋。\n\n大家一起回家。',count:3});
     assert.equal(s.shots.length,3);assert.equal(s.segments.length,2);assert.equal(s.settings.mode,'mock');
     assert.equal((await post({action:'add-shot'}, {...s,revision:s.revision-1})).code,409);
-    s=await ok({action:'settings',settings:{...s.settings,candidates:2}});
+    s=await ok({action:'settings',settings:{...s.settings,candidates:2,videoProvider:'dreamina'}});
+    assert.equal(s.settings.videoProvider,'dreamina');
+    s=await ok({action:'settings',settings:{...s.settings,videoProvider:'autodl'}});
+    assert.equal(s.settings.videoProvider,'autodl');
     await ok({action:'generate',kind:'image',ids:s.shots.map(x=>x.id)});s=await wait();
     assert.ok(s.shots.every(x=>x.versions.length===2));
     assert.equal((await post({action:'settings',settings:{...s.settings,mode:'live'}})).code,200);

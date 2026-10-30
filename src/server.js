@@ -1,28 +1,48 @@
 import http from 'node:http';
 import { createReadStream, createWriteStream, existsSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename, stat, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, stat, rm, copyFile } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPipeline } from './pipeline.js';
-import { projectFile, readProjectFile } from './project-file.js';
+import { projectFile, projectPackage, readProjectFile } from './project-file.js';
 import { defaultProject, validateProject, autoArrange } from './project.js';
 import { probe, run, renderProject } from './render.js';
+import { writeZip, listZip, extractZipEntry, readZipText } from './zip-store.js';
 import { ttsProviders, ttsVoices, voiceCategory, validateTTS, validateDialogue, synthesizeSpeech } from './tts.js';
 import { loadSovitsSettings, saveSovitsSettings, sovitsSettingsStatus } from './tts-config.js';
+import { appDataRoot, resolveDataRoot, projectDataRoot, ensureProjectDirs, validateProjectDir, writeWorkspace, pickProjectFolder } from './project-workspace.js';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const root = path.resolve(process.env.CUTPOT_DATA || path.join(workspace,'.cutpot'));
+const appRoot = appDataRoot(workspace);
 const port = Number(process.env.PORT || 4317);
+const PACKAGE_LIMIT = 8 * 1024 ** 3;
 const projectRevision = () => createHash('sha256').update(JSON.stringify(project)).digest('hex');
-await mkdir(path.join(root,'media'),{recursive:true});
-await mkdir(path.join(root,'thumbs'),{recursive:true});
-try{await loadSovitsSettings(root);}catch{console.warn('GPT-SoVITS 本机配置无法加载，请在自动配音面板中重新配置');}
-let assets = [], project = defaultProject();
-try { assets = JSON.parse(await readFile(path.join(root,'assets.json'),'utf8')); } catch(e) { if(e.code !== 'ENOENT') throw e; }
-try { project = JSON.parse(await readFile(path.join(root,'project.json'),'utf8')); } catch(e) { if(e.code !== 'ENOENT') throw e; }
+await mkdir(appRoot,{recursive:true});
+const initial = await resolveDataRoot(appRoot);
+let root = initial.root;
+let projectDir = initial.projectDir;
+await ensureProjectDirs(root);
+async function streamBodyToFile(req,file,limit){
+  let size=0;const out=createWriteStream(file);
+  try{
+    for await(const chunk of req){
+      size+=chunk.length;
+      if(size>limit){out.destroy();throw new Error('工程压缩包过大（上限 8 GB）');}
+      if(!out.write(chunk))await new Promise(r=>out.once('drain',r));
+    }
+    await new Promise((resolve,reject)=>out.end(err=>err?reject(err):resolve()));
+  }catch(error){await rm(file,{force:true});throw error;}
+  return size;
+}
+function packageFileName(name){
+  const base=String(name||'未命名项目').replace(/[\\/:*?"<>|]+/g,'_').replace(/\s+/g,' ').trim().slice(0,80)||'未命名项目';
+  return `${base}.cutpot.zip`;
+}
+try{await loadSovitsSettings(appRoot);}catch{console.warn('GPT-SoVITS 本机配置无法加载，请在自动配音面板中重新配置');}
+let assets = [], project = defaultProject(), creation;
 let saveQueue = Promise.resolve();
 function persist() {
   const snapshot = {assets:JSON.stringify(assets),project:JSON.stringify(project,null,2)};
@@ -59,25 +79,52 @@ async function serve(req,res,file) {
   } else {res.writeHead(200,{...headers,'Content-Length':s.size});await pipeline(createReadStream(file),res);}
 }
 async function addAsset(file,name,tts=null) {
-  const metadata=await probe(file);
-  const hash=createHash('sha256');for await(const c of createReadStream(file))hash.update(c);
+  const base=path.basename(file);
+  if(base.startsWith('._')||base.startsWith('.')||base==='Thumbs.db')throw new Error(`忽略系统附属文件：${base}`);
+  const mediaDir=path.join(root,'media');
+  let durable=file;
+  if(path.resolve(path.dirname(file))!==path.resolve(mediaDir)){
+    const dest=path.join(mediaDir,`${randomUUID()}${path.extname(file)||''}`);
+    await copyFile(file,dest);
+    durable=dest;
+    console.info('[assets] copied into media',{name,from:file,to:dest});
+  }
+  const metadata=await probe(durable);
+  const hash=createHash('sha256');for await(const c of createReadStream(durable))hash.update(c);
   const sha256=hash.digest('hex');
-  const existing=assets.find(a=>a.sha256===sha256&&(!tts||JSON.stringify(a.tts)===JSON.stringify(tts)));if(existing){if(!existsSync(existing.path))existing.path=file;return existing;}
-  const id=randomUUID(), asset={id,name,path:file,sha256,...metadata,...(tts?{tts}:{})};
+  const existing=assets.find(a=>a.sha256===sha256&&(!tts||JSON.stringify(a.tts)===JSON.stringify(tts)));
+  if(existing){
+    if(!existsSync(existing.path)){existing.path=durable;console.warn('[assets] repaired missing path',{id:existing.id,path:durable});}
+    return existing;
+  }
+  const id=randomUUID(), asset={id,name,path:durable,sha256,...metadata,...(tts?{tts}:{})};
   if(metadata.type!=='audio'){
-    try { await run('ffmpeg',['-hide_banner','-loglevel','error','-y','-i',file,'-frames:v','1','-vf','scale=320:-2',path.join(root,'thumbs',`${id}.jpg`)]); asset.thumbnail=`/api/assets/${id}/thumbnail`; } catch {}
+    try { await run('ffmpeg',['-hide_banner','-loglevel','error','-y','-i',durable,'-frames:v','1','-vf','scale=320:-2',path.join(root,'thumbs',`${id}.jpg`)]); asset.thumbnail=`/api/assets/${id}/thumbnail`; } catch {}
   }
   assets.push(asset);return asset;
 }
-
-// Persist a new editor project before starting external jobs so its ID survives an early restart.
-if(!existsSync(path.join(root,'project.json')))await persist();
-const creation = await createPipeline({ root, workspace, getProject:()=>project, getAssets:()=>assets, addAsset, saveAssets:persist, editorRevision:projectRevision,
-  async setProject(next, expected) {
-    if (!expected || expected!==projectRevision()) throw Object.assign(new Error('剪辑工程已更新，请刷新后重新送入剪辑'),{statusCode:409});
-    project=validateProject(next,assets);await persist();
+async function openDataRoot(nextRoot, nextProjectDir, {fresh=null}={}){
+  if(creation)creation.close();
+  for(const c of controllers.values())c.abort();
+  jobs.clear();controllers.clear();
+  root=nextRoot;projectDir=nextProjectDir;
+  await ensureProjectDirs(root);
+  if(fresh){
+    assets=[];project=validateProject(fresh,assets);
+  }else{
+    assets=[];project=defaultProject();
+    try{assets=JSON.parse(await readFile(path.join(root,'assets.json'),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
+    try{project=JSON.parse(await readFile(path.join(root,'project.json'),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
   }
-});
+  await persist();
+  creation=await createPipeline({ root, workspace, getProject:()=>project, getAssets:()=>assets, addAsset, saveAssets:persist, editorRevision:projectRevision,
+    async setProject(next, expected) {
+      if (!expected || expected!==projectRevision()) throw Object.assign(new Error('剪辑工程已更新，请刷新后重新送入剪辑'),{statusCode:409});
+      project=validateProject(next,assets);await persist();
+    }
+  });
+}
+await openDataRoot(root, projectDir);
 
 const demoShots = [
   [1,2,'乐乐开场','大家好，我是乐乐！'],[3,3,'课间怎么玩','课间怎么玩才安全？'],
@@ -97,15 +144,15 @@ const server=http.createServer(async(req,res)=>{
     if(req.headers.origin && ![`http://127.0.0.1:${port}`,`http://localhost:${port}`].includes(req.headers.origin)){json(res,403,{error:'不允许跨站请求'});return;}
     const url=new URL(req.url,`http://${host}`), p=url.pathname;
     if(req.method==='GET'&&p==='/api/health'){
-      json(res,200,{app:'cutpot',apiVersion:1,version:'0.9.0',capabilities:['storyboard','first-last-frame','generation-versions','pipeline-handoff','tts','tts-child-presets','tts-gpt-sovits','tts-native-child','tts-config','tts-characters','tts-dialogue','burn-subtitles'],pid:process.pid,dataDir:root,url:`http://127.0.0.1:${port}`});return;
+      json(res,200,{app:'cutpot',apiVersion:1,version:'0.9.0',capabilities:['storyboard','first-last-frame','generation-versions','pipeline-handoff','project-package','project-folder','tts','tts-child-presets','tts-gpt-sovits','tts-native-child','tts-config','tts-characters','tts-dialogue','burn-subtitles'],pid:process.pid,dataDir:root,projectDir,appRoot,url:`http://127.0.0.1:${port}`});return;
     }
-    if(req.method==='GET'&&p==='/api/pipeline'){json(res,200,creation.view());return;}
-    if(req.method==='POST'&&p==='/api/pipeline'){json(res,200,await creation.act(await body(req)));return;}
+    if(req.method==='GET'&&p==='/api/pipeline'){json(res,200,{...creation.view(),projectDir,dataDir:root});return;}
+    if(req.method==='POST'&&p==='/api/pipeline'){json(res,200,{...(await creation.act(await body(req))),projectDir,dataDir:root});return;}
     if(req.method==='GET'&&p==='/api/tts/config'){json(res,200,sovitsSettingsStatus());return;}
     if(req.method==='PUT'&&p==='/api/tts/config'){
       const input=await body(req);
       if(input.referenceAssetId){const ref=assets.find(a=>a.id===input.referenceAssetId&&a.type==='audio');if(!ref)throw new Error('请选择素材库中的参考音频');if(input.ageGroup==='child'&&ref.tts&&(ref.tts.ageGroup!=='child'||ref.tts.preset!=='natural'))throw new Error('已知的成人或变调音频不能作为儿童原声参考');input.referenceAudio=ref.path;input.referenceName=ref.name;}
-      json(res,200,await saveSovitsSettings(root,input));return;
+      json(res,200,await saveSovitsSettings(appRoot,input));return;
     }
     if(req.method==='GET'&&p==='/api/tts/providers'){json(res,200,await ttsProviders());return;}
     if(req.method==='GET'&&p==='/api/tts/voices'){json(res,200,voiceCategory(await ttsVoices(url.searchParams.get('provider')||undefined),url.searchParams.get('category')||'all'));return;}
@@ -136,11 +183,53 @@ const server=http.createServer(async(req,res)=>{
     }
     if(req.method==='GET'&&p==='/api/state'){
       let engine=true;try{await run('ffmpeg',['-version']);}catch{engine=false;}
-      json(res,200,{project,projectRevision:projectRevision(),assets:assets.map(publicAsset),jobs:[...jobs.values()],engine});return;
+      json(res,200,{project,projectRevision:projectRevision(),assets:assets.map(publicAsset),jobs:[...jobs.values()],engine,projectDir,dataDir:root});return;
+    }
+    if(req.method==='POST'&&p==='/api/project/pick-folder'){
+      const selected=await pickProjectFolder();
+      json(res,200,{projectDir:selected});return;
+    }
+    if(req.method==='POST'&&p==='/api/project/new'){
+      if(creation.hasActive()||[...jobs.values(),...speechJobs.values()].some(j=>j.status==='running')){
+        json(res,409,{error:'有生成、导出或配音任务进行中，请完成后再新建项目'});return;
+      }
+      const input=await body(req);
+      const selected=await validateProjectDir(input.projectDir);
+      const next=defaultProject();
+      next.name=String(input.name||'未命名项目').trim().slice(0,120)||'未命名项目';
+      next.fps=project.fps;next.width=project.width;next.height=project.height;
+      const nextRoot=projectDataRoot(selected);
+      await writeWorkspace(appRoot,{projectDir:selected});
+      await openDataRoot(nextRoot,selected,{fresh:next});
+      console.info('[project-new]',{projectId:project.id,name:project.name,projectDir});
+      res.setHeader('ETag',projectRevision());
+      json(res,200,{project,projectRevision:projectRevision(),creation:creation.view(),assets:assets.map(publicAsset),projectDir,dataDir:root});
+      return;
     }
     if(req.method==='GET'&&p==='/api/project-file'){
       const creationSnapshot=creation.snapshot();
       json(res,200,{...projectFile(project,creationSnapshot,assets),editorRevision:projectRevision(),creationRevision:creationSnapshot.revision});return;
+    }
+    if(req.method==='GET'&&p==='/api/project-package'){
+      const creationSnapshot=creation.snapshot();
+      const {manifest,media}=projectPackage(project,creationSnapshot,assets);
+      for(const item of media){if(!existsSync(item.path))throw new Error(`源文件无法读取：${item.name}。请先修复素材后再保存工程包`);}
+      const dir=path.join(root,'tmp',randomUUID()),zipPath=path.join(dir,'project.cutpot.zip');
+      await mkdir(dir,{recursive:true});
+      try{
+        console.info('[project-package] export start',{projectId:project.id,media:media.length});
+        await writeZip(zipPath,[{name:'project.json',data:JSON.stringify(manifest,null,2)},...media.map(item=>({name:item.file,path:item.path}))]);
+        const fileName=packageFileName(project.name),size=(await stat(zipPath)).size;
+        console.info('[project-package] export ready',{fileName,bytes:size,media:media.length});
+        res.writeHead(200,{
+          'Content-Type':'application/zip',
+          'Content-Length':size,
+          'Content-Disposition':`attachment; filename="${fileName.replace(/[^\x20-\x7e]/g,'_')}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+          'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'
+        });
+        await pipeline(createReadStream(zipPath),res);
+      }finally{await rm(dir,{recursive:true,force:true});}
+      return;
     }
     if(req.method==='POST'&&p==='/api/project-file'){
       const input=await body(req,32*1024*1024);
@@ -149,6 +238,39 @@ const server=http.createServer(async(req,res)=>{
       if([...jobs.values(),...speechJobs.values()].some(j=>j.status==='running')){json(res,409,{error:'请等待导出或配音任务完成后再导入工程'});return;}
       await creation.importSnapshot(data,req.headers['if-match'],Number(req.headers['x-cutpot-creation-revision']));
       res.setHeader('ETag',projectRevision());json(res,200,{project,projectRevision:projectRevision()});return;
+    }
+    if(req.method==='POST'&&p==='/api/project-package'){
+      if([...jobs.values(),...speechJobs.values()].some(j=>j.status==='running')){json(res,409,{error:'请等待导出或配音任务完成后再导入工程'});return;}
+      const dir=path.join(root,'tmp',randomUUID()),zipPath=path.join(dir,'upload.cutpot.zip');
+      await mkdir(dir,{recursive:true});
+      try{
+        const bytes=await streamBodyToFile(req,zipPath,PACKAGE_LIMIT);
+        console.info('[project-package] import start',{bytes});
+        const entries=await listZip(zipPath);
+        const projectEntry=entries.find(e=>e.name==='project.json');
+        if(!projectEntry)throw new Error('压缩包缺少 project.json');
+        const input=JSON.parse(await readZipText(zipPath,projectEntry));
+        if(input.bundle&&input.bundle!=='media')throw new Error('不支持的工程包类型');
+        for(const record of input.assets||[]){
+          if(!record.file)continue;
+          if(!String(record.file).startsWith('media/')||record.file.includes('..'))throw new Error(`素材路径无效：${record.file}`);
+          const entry=entries.find(e=>e.name===record.file);
+          if(!entry)throw new Error(`压缩包缺少素材：${record.name||record.file}`);
+          const ext=path.extname(record.file)||'.bin';
+          const dest=path.join(root,'media',`${randomUUID()}${ext}`);
+          await extractZipEntry(zipPath,entry,dest);
+          const asset=await addAsset(dest,record.name||path.basename(record.file));
+          if(record.sha256&&asset.sha256!==record.sha256){await rm(dest,{force:true});throw new Error(`素材内容与清单不一致：${record.name||record.file}`);}
+          if(asset.path!==dest)await rm(dest,{force:true});
+        }
+        await persist();
+        const data=readProjectFile(input,assets);
+        for(const id of data.usedAssetIds){const a=assets.find(a=>a.id===id);if(!existsSync(a.path))throw new Error(`源文件无法读取：${a.name}`);}
+        await creation.importSnapshot(data,req.headers['if-match'],Number(req.headers['x-cutpot-creation-revision']));
+        console.info('[project-package] import done',{projectId:project.id,assets:data.usedAssetIds.length});
+        res.setHeader('ETag',projectRevision());json(res,200,{project,projectRevision:projectRevision()});
+      }finally{await rm(dir,{recursive:true,force:true});}
+      return;
     }
     if(req.method==='PUT'&&p==='/api/project'){
       const input=await body(req);
@@ -226,7 +348,10 @@ const server=http.createServer(async(req,res)=>{
     else if(!res.destroyed)res.end();
   }
 });
-server.listen(port,'127.0.0.1',()=>console.log(`CutPot 工作台：http://127.0.0.1:${port}`));
+server.listen(port,'127.0.0.1',()=>{
+  console.log(`CutPot 工作台：http://127.0.0.1:${port}`);
+  console.log(`数据目录：${root}${projectDir?` · 项目文件夹：${projectDir}`:''}`);
+});
 server.on('error',error=>{console.error(`CutPot 启动失败：${error.message}`);process.exit(1);});
 function shutdown(){creation.close();for(const c of [...controllers.values(),...speechControllers.values()])c.abort();server.close(()=>process.exit(0));}
 for(const event of ['SIGINT','SIGTERM'])process.on(event,shutdown);

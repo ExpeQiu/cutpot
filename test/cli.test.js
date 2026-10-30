@@ -21,11 +21,20 @@ async function cli(args,base,expected=0){
 
 test('CLI help, unknown options and error outputs are script-friendly',async()=>{
   assert.match((await cli(['--help'])).help,/compose FILE/);
+  assert.match((await cli(['--help'])).help,/validate MANIFEST/);
   assert.equal((await cli(['--version'])).version,'0.9.0');
-  assert.match((await cli(['not-a-command'],null,1)).error,/未知命令/);
+  const unknown=await cli(['not-a-command'],null,1);
+  assert.match(unknown.error,/未知命令/);
+  assert.equal(unknown.code,'UNKNOWN_COMMAND');
+  assert.equal(unknown.retryable,false);
   assert.match((await cli(['clip','edit','1','--frobnicate'],null,1)).error,/Unknown option/);
   assert.match((await cli(['status','--url','https://example.com'],null,1)).error,/仅支持/);
   assert.match((await cli(['export','--no-wait','-o','ignored.mp4'],null,1)).error,/不能与/);
+  const caps=await cli(['capabilities']);
+  assert.equal(caps.app,'cutpot');
+  assert.ok(caps.commands.includes('validate'));
+  assert.ok(caps.features.dryRun);
+  assert.equal((await cli(['schema','manifest'])).kind,'cutpot.render.manifest');
 });
 
 test('CLI real editing + composition + manifest + downloads preserve current workbench project',async t=>{
@@ -35,7 +44,10 @@ test('CLI real editing + composition + manifest + downloads preserve current wor
   try{
     const started=await cli(['start','--port',port,'--data',data],base);assert.equal(started.dataDir,data);
     assert.equal((await cli(['status'],base)).running,true);
-    assert.equal((await cli(['doctor'],base)).ok,true);
+    const doctor=await cli(['doctor'],base);
+    assert.equal(doctor.ok,true);
+    assert.equal(doctor.dependencies.ffmpeg.ready,true);
+    assert.ok(doctor.dependencies.burnSubtitles);
     const video=path.join(temp,'shot_02 with space.mp4'),image=path.join(temp,'分镜01.png'),audio=path.join(temp,'voice.wav');
     await run('ffmpeg',['-v','error','-y','-f','lavfi','-i','color=c=red:s=160x120:r=30:d=1','-c:v','libx264',video]);
     await run('ffmpeg',['-v','error','-y','-f','lavfi','-i','color=c=blue:s=120x160','-frames:v','1',image]);
@@ -73,13 +85,17 @@ test('CLI real editing + composition + manifest + downloads preserve current wor
     assert.deepEqual(await cli(['project','show'],base),before);
     const manifest=path.join(temp,'manifest.json');
     await writeFile(manifest,JSON.stringify({name:'manifest',resolution:'1280x720',fps:25,narration:'voice.wav',clips:[{file:path.basename(video),sourceIn:.12,duration:.4},{file:'分镜01.png',duration:.6,subtitle:'清单字幕'}]}));
+    const checked=await cli(['validate',manifest],base);assert.equal(checked.ok,true);assert.equal(checked.summary.clips,2);
+    const dry=await cli(['render',manifest,'--dry-run','-o',path.join(temp,'planned.mp4')],base);
+    assert.equal(dry.ok,true);assert.equal(dry.dryRun,true);assert.equal(dry.imported,false);assert.equal(dry.frames,25);
+    assert.deepEqual(await cli(['project','show'],base),before);
     const rendered=await cli(['render',manifest,'-o',path.join(temp,'manifest.mp4')],base);assert.equal(rendered.status,'completed');
     assert.deepEqual(await cli(['project','show'],base),before);
     await cli(['project','new','--force'],base);await cli(['project','open',saved],base);
     assert.equal((await cli(['clip','list'],base)).length,2);
     const queued=await cli(['export','--no-wait'],base);assert.equal(queued.status,'running');
     assert.equal((await cli(['job',queued.id],base)).id,queued.id);
-    for(let i=0;i<100;i++){const job=await cli(['job',queued.id],base);if(job.status==='completed')break;if(job.status==='failed')assert.fail(job.message);await new Promise(r=>setTimeout(r,50));}
+    const waited=await cli(['job','wait',queued.id],base);assert.equal(waited.status,'completed');
     await cli(['download',queued.id,'-o',path.join(temp,'async.mp4')],base);
     assert.equal((await cli(['jobs'],base)).length,4);
     const timeout=await cli(['compose',image,'--duration','3600','--resolution','1920x1080','--timeout','0.1','-o',path.join(temp,'timeout.mp4')],base,1);

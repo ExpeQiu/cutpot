@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readFile, writeFile, rename, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { generate, endpointQuality } from './generation.js';
@@ -27,7 +28,14 @@ export function segmentStale(state, segment) {
   const v = selectedVersion(segment);
   return Boolean(v && (v.firstAssetId !== selectedVersion(state.shots.find(s => s.id === segment.fromShotId))?.assetId || v.lastAssetId !== selectedVersion(state.shots.find(s => s.id === segment.toShotId))?.assetId || v.prompt !== segment.prompt || v.duration !== segment.duration));
 }
-function fresh(projectId) { return { version: 1, projectId, revision: 0, script: '', style: '', references: [], settings: { mode: 'mock', ratio: '16:9', resolution: '2k', candidates: 4 }, shots: [], segments: [], jobs: [], archives: [] }; }
+function fresh(projectId) { return { version: 1, projectId, revision: 0, script: '', style: '', references: [], settings: { mode: 'mock', ratio: '16:9', resolution: '2k', candidates: 4, videoProvider: 'autodl' }, shots: [], segments: [], jobs: [], archives: [] }; }
+function normalizeSettings(settings = {}) {
+  const videoProvider = settings.videoProvider || 'autodl';
+  if (!['mock', 'live'].includes(settings.mode) || !['16:9', '9:16', '1:1'].includes(settings.ratio) || !['2k', '4k'].includes(settings.resolution) || !['autodl', 'dreamina'].includes(videoProvider)) {
+    throw new Error('生成设置无效');
+  }
+  return { mode: settings.mode, ratio: settings.ratio, resolution: settings.resolution, candidates: Math.round(number(settings.candidates, 1, 10, '候选数量')), videoProvider };
+}
 const active = j => ['queued', 'running'].includes(j.status);
 export async function createPipeline({ root, getProject, getAssets, addAsset, saveAssets, setProject, editorRevision, workspace }) {
   const file = path.join(root, 'pipeline.json');
@@ -39,12 +47,33 @@ export async function createPipeline({ root, getProject, getAssets, addAsset, sa
     const next = queue.then(async () => { await writeFile(`${file}.tmp`, snapshot); await rename(`${file}.tmp`, file); });
     queue = next.catch(() => {}); return next;
   }
+  /** Drop version entries whose media file is gone (e.g. AppleDouble sidecars cleaned up). */
+  function scrubMissingVersions() {
+    let removed = 0;
+    for (const s of Object.values(store.projects)) {
+      for (const item of [...(s.shots || []), ...(s.segments || [])]) {
+        const before = item.versions?.length || 0;
+        item.versions = (item.versions || []).filter(v => {
+          const a = getAssets().find(x => x.id === v.assetId);
+          return a && existsSync(a.path);
+        });
+        removed += before - item.versions.length;
+        if (!item.versions.some(v => v.id === item.selectedVersionId)) {
+          item.selectedVersionId = item.versions[0]?.id ?? null;
+        }
+      }
+    }
+    if (removed) console.warn('[pipeline] scrubbed versions with missing media', { removed });
+    return removed;
+  }
+  if (scrubMissingVersions()) await save();
   function current() { const id = getProject().id; return store.projects[id] ||= fresh(id); }
   function asset(id, type) { const a = getAssets().find(a => a.id === id); if (!a || (type && a.type !== type)) throw new Error(`请选择有效的${type === 'image' ? '图片' : '视频'}素材`); return a; }
   function target(s, kind, id) { const item = (kind === 'image' ? s.shots : s.segments).find(x => x.id === id); if (!item) throw new Error('分镜或片段不存在，请刷新'); return item; }
   function status(s, item) { const job = [...s.jobs].reverse().find(j => j.targetId === item.id); return job && ['queued', 'running', 'interrupted', 'failed'].includes(job.status) ? job.status : selectedVersion(item) ? 'completed' : 'pending'; }
   function view() {
     const s = current();
+    if (!s.settings.videoProvider) s.settings.videoProvider = 'autodl';
     return { ...structuredClone(s), name: getProject().name, editorRevision: editorRevision(), editorClips: getProject().clips.length, assets: getAssets().map(({ path: hidden, ...a }) => a), shots: s.shots.map(x => ({ ...x, status: status(s, x) })), segments: s.segments.map(x => ({ ...x, status: status(s, x), stale: segmentStale(s, x) })) };
   }
   async function updateJob(s, job, patch) { Object.assign(job, patch, { updatedAt: now() }); await save(); }
@@ -100,9 +129,7 @@ export async function createPipeline({ root, getProject, getAssets, addAsset, sa
     const action = input.action;
     if (action === 'script') { s.script = text(input.script, 50000); s.style = text(input.style, 4000); }
     else if (action === 'settings') {
-      const settings = input.settings || {};
-      if (!['mock', 'live'].includes(settings.mode) || !['16:9', '9:16', '1:1'].includes(settings.ratio) || !['2k', '4k'].includes(settings.resolution)) throw new Error('生成设置无效');
-      s.settings = { mode: settings.mode, ratio: settings.ratio, resolution: settings.resolution, candidates: Math.round(number(settings.candidates, 1, 10, '候选数量')) };
+      s.settings = normalizeSettings(input.settings || {});
     } else if (action === 'references') {
       if (!Array.isArray(input.assetIds) || input.assetIds.length > 10) throw new Error('主体参考图最多 10 张');
       input.assetIds.forEach(id => asset(id, 'image')); s.references = [...new Set(input.assetIds)];
@@ -161,13 +188,19 @@ export async function createPipeline({ root, getProject, getAssets, addAsset, sa
         if (s.jobs.some(j => j.targetId === id && (active(j) || j.status === 'interrupted' && j.externalId))) throw new Error('所选项已有任务，请先完成或继续查询');
         const common = { ratio: s.settings.ratio, prompt: `${s.style ? `${s.style}\n` : ''}${item.prompt}`.trim() };
         if (!item.prompt.trim()) throw new Error('请填写每个选中项的提示词');
+        const videoProvider = s.settings.videoProvider || 'autodl';
         const data = input.kind === 'image' ? { ...common, negativePrompt: item.negativePrompt, candidates: s.settings.candidates, resolution: s.settings.resolution, references: s.references.map(id => asset(id, 'image').path) } : (() => {
           const first = selectedVersion(target(s, 'image', item.fromShotId)), last = selectedVersion(target(s, 'image', item.toShotId));
           if (!first || !last) throw new Error('每个片段都必须具备首帧和尾帧');
           if (s.settings.mode === 'live' && [first, last].some(v => v.mode === 'mock')) throw new Error('真实视频不能使用模拟帧，请先导入或生成正式分镜图');
-          return { ...common, prompt: item.prompt, duration: item.duration, firstAssetId: first.assetId, lastAssetId: last.assetId, firstPath: asset(first.assetId, 'image').path, lastPath: asset(last.assetId, 'image').path };
+          if (videoProvider === 'dreamina') {
+            const duration = Math.round(item.duration);
+            if (duration < 4 || duration > 15) throw new Error('即梦首尾帧视频时长须为 4–15 秒，请先调整片段时长');
+          }
+          return { ...common, prompt: item.prompt, duration: item.duration, videoResolution: '720p', firstAssetId: first.assetId, lastAssetId: last.assetId, firstPath: asset(first.assetId, 'image').path, lastPath: asset(last.assetId, 'image').path };
         })();
-        pending.push({ id: randomUUID(), kind: input.kind, targetId: id, mode: s.settings.mode, status: 'queued', progress: 0, message: '等待生成', input: data, previousSelection: item.selectedVersionId, createdAt: now() });
+        const provider = input.kind === 'image' ? 'dreamina' : videoProvider;
+        pending.push({ id: randomUUID(), kind: input.kind, targetId: id, mode: s.settings.mode, provider, status: 'queued', progress: 0, message: '等待生成', input: data, previousSelection: item.selectedVersionId, createdAt: now() });
       }
       s.jobs.push(...pending);
     } else if (action === 'stop-queue') { s.jobs.filter(j => j.status === 'queued').forEach(j => Object.assign(j, { status: 'cancelled', message: '已停止排队，未提交生成' })); }

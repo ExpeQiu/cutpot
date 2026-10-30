@@ -4,6 +4,14 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // All CLI calls use argument arrays. Prompts and file names never enter a shell.
+/** Skip macOS AppleDouble / hidden sidecars that also end in .png/.mp4. */
+export function isDownloadedMediaName(name, kind) {
+  if (!name || name.startsWith('._') || name.startsWith('.') || name === 'Thumbs.db') return false;
+  return kind === 'image' ? /\.(png|jpe?g|webp)$/i.test(name) : /\.(mp4|webm|mov)$/i.test(name);
+}
+export async function listDownloadedMedia(dir, kind) {
+  return (await readdir(dir)).filter(n => isDownloadedMediaName(n, kind)).sort().map(n => path.join(dir, n));
+}
 export function command(binary, args, { signal, timeout = 90000 } = {}) {
   return new Promise((resolve, reject) => execFile(binary, args, { signal, timeout, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
     if (error) reject(new Error(`${binary}：${(stderr || stdout || error.message).slice(-1800)}`));
@@ -25,55 +33,85 @@ export function videoArgs(job) {
   const [width, height] = s.ratio === '9:16' ? [432, 768] : s.ratio === '1:1' ? [768, 768] : [768, 432];
   return ['job', 'submit', '--modality', 'video', '--play', 'first_last_frame', '--image', s.firstPath, '--end-image', s.lastPath, '--prompt', s.prompt, '--duration', String(s.duration), '--width', String(width), '--height', String(height), '--fps', '24', '--format', 'json'];
 }
+export function dreaminaVideoArgs(job) {
+  const s = job.input;
+  if (!s.firstPath || !s.lastPath) throw new Error('首尾帧均为必填，不能降级为其他模式');
+  const duration = Math.round(Number(s.duration));
+  if (!Number.isFinite(duration) || duration < 4 || duration > 15) throw new Error('即梦首尾帧视频时长须为 4–15 秒');
+  return ['frames2video', '--first', s.firstPath, '--last', s.lastPath, '--prompt', s.prompt, '--ratio', s.ratio, '--video_resolution', s.videoResolution || '720p', '--duration', String(duration), '--poll', '0'];
+}
+export function resolveProvider(job) {
+  if (job.provider) return job.provider;
+  return job.kind === 'image' ? 'dreamina' : 'autodl';
+}
 function liveItem(result) {
   if (result.ok === false) throw new Error(result.error || 'AutoDL 调用失败');
   if (result.data_source !== 'live' || /mock|demo/i.test(result.items?.[0]?.provider || '')) throw new Error('AutoDL 返回模拟数据，请检查服务配置；未将其标记为真实生成');
   return result.items?.[0] || {};
 }
-export async function generate(job, dir, { signal, update, resume = false } = {}) {
-  await mkdir(dir, { recursive: true });
-  if (job.mode === 'mock') return mockGenerate(job, dir, signal);
-  const cli = job.kind === 'image' ? (process.env.CUTPOT_DREAMINA_BIN || 'dreamina') : (process.env.CUTPOT_AUTODL_BIN || 'autodl-cli');
-  if (!resume) {
-    const args = job.kind === 'image' ? imageArgs(job) : videoArgs(job);
-    await writeFile(path.join(dir, 'request.json'), JSON.stringify({ cli, args, createdAt: job.createdAt }, null, 2));
-    const result = parseResult((await command(cli, args, { signal })).stdout);
-    const externalId = job.kind === 'image' ? result.submit_id : liveItem(result).id;
-    if (!externalId) throw new Error(result.fail_reason || '提交未返回任务编号，请检查服务任务列表后再重试，避免重复计费');
-    job.externalId = externalId;
-    await update({ externalId, message: '任务已提交，等待生成', progress: 20 });
-  }
+async function pollDreamina(cli, job, dir, { signal, update }) {
   for (;;) {
     signal?.throwIfAborted();
     let result;
     try {
-      result = parseResult((await command(cli, job.kind === 'image' ? ['query_result', '--submit_id', job.externalId] : ['job', 'get', job.externalId, '--format', 'json'], { signal, timeout: 30000 })).stdout);
+      result = parseResult((await command(cli, ['query_result', '--submit_id', job.externalId], { signal, timeout: 30000 })).stdout);
     } catch (error) {
       error.tracking = true; throw error;
     }
     await writeFile(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
-    if (job.kind === 'image') {
-      if (result.gen_status === 'fail') throw new Error(result.fail_reason || '即梦生成失败');
-      if (result.gen_status === 'success') {
-        await update({ progress: 85, message: '下载分镜图' });
-        try { await command(cli, ['query_result', '--submit_id', job.externalId, '--download_dir', dir], { signal }); } catch(error) { error.tracking=true; throw error; }
-        const files = (await readdir(dir)).filter(n => /\.(png|jpe?g|webp)$/i.test(n)).sort();
-        if (!files.length) throw Object.assign(new Error('即梦任务已完成，但下载未发现图片；可继续查询重试下载'), { tracking: true });
-        return files.map(n => path.join(dir, n));
-      }
-    } else {
-      const item = liveItem(result);
-      if (['failed', 'cancelled', 'error'].includes(item.status)) throw new Error(typeof item.error === 'string' ? item.error : 'AutoDL 视频生成失败');
-      if (['succeeded', 'completed', 'success'].includes(item.status)) {
-        await update({ progress: 85, message: '下载视频' });
-        const file = path.join(dir, 'video.mp4');
-        try { liveItem(parseResult((await command(cli, ['job', 'file', job.externalId, '-o', file, '--format', 'json'], { signal })).stdout)); }
-        catch (error) { error.tracking = true; throw error; }
-        return [file];
-      }
+    if (result.gen_status === 'fail') throw new Error(result.fail_reason || '即梦生成失败');
+    if (result.gen_status === 'success') {
+      await update({ progress: 85, message: job.kind === 'image' ? '下载分镜图' : '下载视频' });
+      try { await command(cli, ['query_result', '--submit_id', job.externalId, '--download_dir', dir], { signal }); }
+      catch (error) { error.tracking = true; throw error; }
+      const files = await listDownloadedMedia(dir, job.kind);
+      if (!files.length) throw Object.assign(new Error(job.kind === 'image' ? '即梦任务已完成，但下载未发现图片；可继续查询重试下载' : '即梦任务已完成，但下载未发现视频；可继续查询重试下载'), { tracking: true });
+      return files;
     }
     await delay(8000, undefined, { signal });
   }
+}
+async function pollAutodl(cli, job, dir, { signal, update }) {
+  for (;;) {
+    signal?.throwIfAborted();
+    let result;
+    try {
+      result = parseResult((await command(cli, ['job', 'get', job.externalId, '--format', 'json'], { signal, timeout: 30000 })).stdout);
+    } catch (error) {
+      error.tracking = true; throw error;
+    }
+    await writeFile(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    const item = liveItem(result);
+    if (['failed', 'cancelled', 'error'].includes(item.status)) throw new Error(typeof item.error === 'string' ? item.error : 'AutoDL 视频生成失败');
+    if (['succeeded', 'completed', 'success'].includes(item.status)) {
+      await update({ progress: 85, message: '下载视频' });
+      const file = path.join(dir, 'video.mp4');
+      try { liveItem(parseResult((await command(cli, ['job', 'file', job.externalId, '-o', file, '--format', 'json'], { signal })).stdout)); }
+      catch (error) { error.tracking = true; throw error; }
+      return [file];
+    }
+    await delay(8000, undefined, { signal });
+  }
+}
+export async function generate(job, dir, { signal, update, resume = false } = {}) {
+  await mkdir(dir, { recursive: true });
+  if (job.mode === 'mock') return mockGenerate(job, dir, signal);
+  const provider = resolveProvider(job);
+  const cli = provider === 'dreamina' ? (process.env.CUTPOT_DREAMINA_BIN || 'dreamina') : (process.env.CUTPOT_AUTODL_BIN || 'autodl-cli');
+  if (!resume) {
+    const args = job.kind === 'image' ? imageArgs(job) : provider === 'dreamina' ? dreaminaVideoArgs(job) : videoArgs(job);
+    await writeFile(path.join(dir, 'request.json'), JSON.stringify({ cli, provider, args, createdAt: job.createdAt }, null, 2));
+    console.info('[generation] submit', { jobId: job.id, kind: job.kind, provider, cli });
+    const result = parseResult((await command(cli, args, { signal })).stdout);
+    const externalId = provider === 'dreamina' ? result.submit_id : liveItem(result).id;
+    if (!externalId) throw new Error(result.fail_reason || '提交未返回任务编号，请检查服务任务列表后再重试，避免重复计费');
+    job.externalId = externalId;
+    job.provider = provider;
+    await update({ externalId, provider, message: '任务已提交，等待生成', progress: 20 });
+  }
+  return provider === 'dreamina'
+    ? pollDreamina(cli, job, dir, { signal, update })
+    : pollAutodl(cli, job, dir, { signal, update });
 }
 async function mockGenerate(job, dir, signal) {
   const size = job.input.ratio === '9:16' ? '360x640' : job.input.ratio === '1:1' ? '512x512' : '640x360';

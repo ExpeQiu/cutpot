@@ -1,4 +1,4 @@
-import {saveProjectFile,importProjectFile} from './project-io.js';
+import {saveProjectFile,importProjectFile,createNewProject} from './project-io.js';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const shapes = {
@@ -6,12 +6,13 @@ const shapes = {
  film: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18m10-18v18M3 8h4m10 0h4M3 16h4m10 0h4"/>',
  plus: '<path d="M12 5v14M5 12h14"/>', arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
  play: '<path d="m8 4 12 8-12 8Z"/>', settings: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
- upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>', check: '<path d="m5 12 4 4L19 6"/>', book: '<path d="M4 4h6l2 2 2-2h6v16h-6l-2 2-2-2H4Zm8 2v16"/>'
+ upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>', download: '<path d="M12 3v13m-5-5 5 5 5-5M4 20h16"/>', check: '<path d="m5 12 4 4L19 6"/>', book: '<path d="M4 4h6l2 2 2-2h6v16h-6l-2 2-2-2H4Zm8 2v16"/>'
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shapes[name] || shapes.image}</svg>`;
 const page = location.pathname === '/videos' ? 'video' : 'image';
 const kind = page;
-let S, selected = null, selectedIds = new Set(), filter = 'all', query = '', error = '', busy = false, uploadTarget, sequence = [], sequenceIndex = 0, sequencePlaying = false, lastSignature = '';
+let S, selected = null, selectedIds = new Set(), filter = 'all', query = '', error = '', busy = false, uploadTarget, sequence = [], sequenceIndex = 0, sequencePlaying = false, lastSignature = '', providerMenuOpen = false;
+const videoProviders = Object.freeze([['dreamina', '即梦 CLI · 视频', '点击生成会消耗即梦积分 · 时长建议 4–10 秒'], ['autodl', 'AutoDL · 视频', '点击生成会使用算力服务']]);
 const drafts = new Map();
 const labels = { pending: '待生成', queued: '排队中', running: '生成中', completed: '已完成', failed: '失败', interrupted: '待查询', cancelled: '已停止', stale: '待更新', approved: '已通过', rejected: '需返工' };
 const items = () => kind === 'image' ? S.shots : S.segments;
@@ -77,19 +78,29 @@ async function saveAllDrafts(){
   }
 }
 function header() {
-  return `<header class="topbar"><a class="brand" href="/storyboard"><span class="brand-mark">C</span><span>CutPot<small>VIDEO WORKSPACE</small></span></a><div class="project-label"><span>项目 /</span><button class="project-title ghost small" data-action="rename" title="重命名项目">${esc(S.name)}</button></div><nav class="workflow-nav" aria-label="创作流水线">${[['/storyboard', '01', '分镜图创作', 'image'], ['/videos', '02', '首尾帧视频', 'video'], ['/editor', '03', '剪辑导出', 'editor']].map(([url, step, title, id]) => `<a href="${url}" ${id === page ? 'aria-current="page"' : ''}><span class="step-number">${step}</span>${title}</a>`).join('')}</nav><div class="spacer"></div><div class="project-file-actions" role="group" aria-label="工程文件"><button class="small" data-action="download-project">保存工程</button><button class="small" data-action="open-project">导入工程</button></div><span class="mode-tag ${S.settings.mode}">${S.settings.mode === 'mock' ? '模拟模式' : '真实生成'}</span><button class="ghost small" data-action="settings">${icon('settings')}生成设置</button></header>`;
+  return `<header class="topbar"><a class="brand" href="/storyboard"><span class="brand-mark">C</span><span>CutPot<small>VIDEO WORKSPACE</small></span></a><div class="project-label"><span>项目 /</span><button class="project-title ghost small" data-action="rename" title="重命名项目">${esc(S.name)}</button>${S.projectDir ? `<small class="project-dir" title="${esc(S.projectDir)}">${esc(S.projectDir)}</small>` : ''}</div><nav class="workflow-nav" aria-label="创作流水线">${[['/storyboard', '01', '分镜图创作', 'image'], ['/videos', '02', '首尾帧视频', 'video'], ['/editor', '03', '剪辑导出', 'editor']].map(([url, step, title, id]) => `<a href="${url}" ${id === page ? 'aria-current="page"' : ''}><span class="step-number">${step}</span>${title}</a>`).join('')}</nav><div class="spacer"></div><div class="project-file-actions" role="group" aria-label="工程文件"><button class="small" data-action="new-project">新增项目</button><button class="small" data-action="download-project">保存工程</button><button class="small" data-action="open-project">导入工程</button></div><span class="mode-tag ${S.settings.mode}">${S.settings.mode === 'mock' ? '模拟模式' : '真实生成'}</span><button class="ghost small" data-action="settings">${icon('settings')}生成设置</button></header>`;
+}
+function videoProvider() { return S.settings.videoProvider || 'autodl'; }
+function providerMeta(provider = videoProvider()) { return videoProviders.find(([id]) => id === provider) || videoProviders[1]; }
+function providerLabel(provider = videoProvider()) { return providerMeta(provider)[1]; }
+function providerHint(provider = videoProvider()) {
+  if (S.settings.mode === 'mock') return '当前只生成本地模拟素材';
+  return providerMeta(provider)[2];
 }
 function stats() {
   const list = items(), finished = list.filter(x => version(x)).length, running = list.filter(x => ['running', 'queued'].includes(x.status)).length;
   const metrics = kind === 'image' ? [[list.length, '总分镜', ''], [finished, '已有图片', 'good'], [running, '生成与排队', ''], [list.filter(x => x.status === 'failed').length, '生成失败', 'bad'], [list.length - finished, '待补齐', 'warn']] : [[list.length, '视频片段', ''], [list.filter(x => quality(x) === 'good').length, '首尾帧贴合', 'good'], [list.filter(x => x.stale || quality(x) === 'warn').length, '需复查', 'warn'], [list.filter(x => quality(x) === 'bad').length, '低贴合或返工', 'bad'], [`${list.reduce((a, x) => a + x.duration, 0).toFixed(1)}s`, '计划总时长', ''], [bytes(list.reduce((a, x) => a + (version(x)?.size || 0), 0)), '选用视频体积', '']];
-  return `<div class="stats">${metrics.map(([value, title, cls]) => `<div class="stat ${cls}"><strong>${value}</strong><span>${title}</span></div>`).join('')}<div class="stat aside-stat">${icon(kind === 'image' ? 'image' : 'film')}<div><strong>${kind === 'image' ? '即梦 · 图片创作' : 'AutoDL · 首尾帧视频'}</strong><span>${S.settings.mode === 'mock' ? '当前只生成本地模拟素材' : kind === 'image' ? '点击生成会消耗即梦积分' : '点击生成会使用算力服务'}</span></div></div></div>`;
+  const aside = kind === 'image'
+    ? `<div class="stat aside-stat">${icon('image')}<div><strong>即梦 · 图片创作</strong><span>${S.settings.mode === 'mock' ? '当前只生成本地模拟素材' : '点击生成会消耗即梦积分'}</span></div></div>`
+    : `<div class="stat aside-stat provider-stat ${providerMenuOpen ? 'open' : ''}" aria-label="视频生成路径"><button type="button" class="provider-trigger" data-provider-menu="toggle" aria-expanded="${providerMenuOpen}" aria-haspopup="listbox"><span class="provider-trigger-main">${icon('film')}<span><strong>${esc(providerLabel())}</strong><span>${esc(providerHint())}</span></span></span><span class="provider-caret" aria-hidden="true"></span></button><div class="provider-menu" role="listbox" aria-label="选择视频生成路径">${videoProviders.map(([id, title, hint]) => `<button type="button" role="option" class="${videoProvider() === id ? 'selected' : ''}" data-video-provider="${id}" aria-selected="${videoProvider() === id}"><strong>${esc(title)}</strong><span>${esc(S.settings.mode === 'mock' ? '模拟模式下不调用该服务' : hint)}</span></button>`).join('')}</div></div>`;
+  return `<div class="stats">${metrics.map(([value, title, cls]) => `<div class="stat ${cls}"><strong>${value}</strong><span>${title}</span></div>`).join('')}${aside}</div>`;
 }
 function references() {
   return `<section class="panel reference-panel" aria-label="主体参考图"><div class="panel-head"><h2>主体参考图</h2><small>所有分镜共用 · ${S.references.length}/10</small><span class="spacer"></span><button class="ghost small" data-action="reference-library">从素材库选择</button></div><div class="references">${S.references.map(id => `<div class="reference"><img src="${thumb(id)}" alt="${esc(asset(id)?.name || '主体参考图')}"><button class="remove small" data-remove-reference="${id}" aria-label="移除参考图">×</button></div>`).join('')}<button class="reference-add" data-action="upload-reference" ${S.references.length >= 10 ? 'disabled' : ''}>${icon('plus')}上传参考图</button><p class="reference-copy">添加人物、服装或场景参考。生成时将一起发送给即梦，帮助不同镜头保持一致。</p></div></section>`;
 }
 function scriptPanel() {
   const draft = drafts.get('script') || S;
-  return `<section class="panel script-panel"><div class="panel-head"><h2>故事脚本</h2><small>从故事开始，逐镜完善</small><span class="spacer"></span><button class="ghost small" data-action="archives">分镜历史 ${S.archives.length ? `(${S.archives.length})` : ''}</button></div><div class="script-layout"><div><label class="skip" for="script">故事脚本</label><textarea id="script" rows="3" maxlength="50000" placeholder="输入完整脚本。用空行分段，或按句子拆成连续分镜…">${esc(draft.script)}</textarea><div class="script-tools"><div class="field"><label for="shot-count">目标分镜数</label><input id="shot-count" type="number" min="1" max="100" value="${S.shots.length || 8}"></div><button class="primary" data-action="split">${icon('book')}拆分分镜</button><button class="ghost" data-action="save-script">保存脚本</button><span class="hint">按段落与句子拆分，保留原文，可逐镜编辑。</span></div></div><div class="stack"><div><label for="style">统一画面风格</label><textarea id="style" rows="3" maxlength="4000" placeholder="例如：三维动画，柔和自然光，保持角色服装一致">${esc(draft.style)}</textarea><p class="hint">生成分镜图时自动附加到每个提示词。</p></div></div></div></section>`;
+  return `<section class="panel script-panel"><div class="panel-head"><h2>故事脚本</h2><small>从故事开始，逐镜完善</small><span class="spacer"></span><button class="ghost small" data-action="archives">分镜历史 ${S.archives.length ? `(${S.archives.length})` : ''}</button></div><div class="script-layout"><div><label for="script">完整脚本</label><textarea id="script" rows="3" maxlength="50000" placeholder="输入完整脚本。用空行分段，或按句子拆成连续分镜…">${esc(draft.script)}</textarea><div class="script-tools"><div class="field"><label for="shot-count">目标分镜数</label><input id="shot-count" type="number" min="1" max="100" value="${S.shots.length || 8}"></div><button class="primary" data-action="split">${icon('book')}拆分分镜</button><button class="ghost" data-action="save-script">保存脚本</button><span class="hint">按段落与句子拆分，保留原文，可逐镜编辑。</span></div></div><div class="stack"><div><label for="style">统一画面风格</label><textarea id="style" rows="3" maxlength="4000" placeholder="例如：三维动画，柔和自然光，保持角色服装一致">${esc(draft.style)}</textarea><p class="hint">生成分镜图时自动附加到每个提示词。</p></div></div></div></section>`;
 }
 function empty(title, description, action, button, compact = false) { return `<div class="empty ${compact ? 'compact' : ''}">${icon(kind === 'image' ? 'image' : 'film')}<h3>${title}</h3><p>${description}</p>${action ? `<button class="primary" data-action="${action}">${button}</button>` : ''}</div>`; }
 function tools() {
@@ -109,7 +120,14 @@ function listCards() {
   }).join('');
 }
 function versionStrip(item) {
-  return item.versions.length ? `<div class="versions" aria-label="候选与历史版本">${item.versions.map((v, i) => `<button class="version" data-version="${v.id}" aria-pressed="${v.id === item.selectedVersionId}">${imageThumb(v, `版本 ${i + 1}`, '')}<span>版本 ${i + 1}</span></button>`).join('')}</div>` : '';
+  if (!item.versions.length) return '';
+  const latestJob = [...item.versions].reverse().find(v => v.jobId)?.jobId;
+  const hasHistory = latestJob && item.versions.some(v => v.jobId && v.jobId !== latestJob);
+  const selectedIndex = item.versions.findIndex(v => v.id === item.selectedVersionId);
+  return `<div class="versions" aria-label="候选与历史版本">${item.versions.map((v, i) => {
+    const fresh = hasHistory && v.jobId === latestJob;
+    return `<button class="version ${fresh ? 'fresh' : ''}" data-version="${v.id}" aria-pressed="${v.id === item.selectedVersionId}">${imageThumb(v, `版本 ${i + 1}`, '')}<span>版本 ${i + 1}${fresh ? ' · 本批' : ''}</span></button>`;
+  }).join('')}</div><p class="hint version-strip-hint">共 ${item.versions.length} 个版本${selectedIndex >= 0 ? ` · 当前选用版本 ${selectedIndex + 1}` : ''}。重新生成会保留旧候选并追加新图；可点版本 1 / 2 切回。</p>`;
 }
 function inspector() {
   const item = current();
@@ -117,7 +135,9 @@ function inspector() {
   const v = version(item), d = drafts.get(selected) || item;
   const media = v ? kind === 'image' ? `<img src="${content(v.assetId)}" alt="${esc(item.title)}">` : `<video id="clip-video" controls playsinline preload="metadata" src="${content(v.assetId)}"></video>` : `<div class="media-empty">${icon(kind === 'image' ? 'image' : 'film')}生成或导入后，在这里预览${kind === 'image' ? '分镜图' : '视频'}</div>`;
   const first = kind === 'video' ? version(S.shots.find(x => x.id === item.fromShotId)) : null, last = kind === 'video' ? version(S.shots.find(x => x.id === item.toShotId)) : null;
-  return `<aside class="panel inspector"><div class="panel-head"><h2>${kind === 'image' ? `分镜 ${num(items().indexOf(item) + 1)}` : `seg_${num(items().indexOf(item) + 1)}`}</h2><span class="spacer"></span>${badge(status(item))}</div><div class="panel-body">${item.stale ? '<div class="inline-warning">首尾帧或生成参数已变更。当前视频保留原版本，更新后再送入剪辑。</div>' : ''}<div class="media-preview">${media}${v?.mode === 'mock' ? '<span class="media-label">模拟素材</span>' : ''}</div>${versionStrip(item)}${kind === 'video' ? `<div class="pair-preview"><div><label>首帧 · ${num(shotNumber(item.fromShotId))}</label>${first ? `<img src="${content(first.assetId)}" alt="首帧">` : '<p class="hint">缺少首帧</p>'}</div><div><label>尾帧 · ${num(shotNumber(item.toShotId))}</label>${last ? `<img src="${content(last.assetId)}" alt="尾帧">` : '<p class="hint">缺少尾帧</p>'}</div></div><div class="quality-scores">${[['firstPSNR', '首帧 PSNR'], ['lastPSNR', '尾帧 PSNR']].map(([key, label]) => `<div class="quality-score"><strong>${v?.[key] == null ? '—' : v[key] >= 100 ? '∞' : v[key].toFixed(1)}</strong><small>${label} · dB</small></div>`).join('')}</div><p class="hint">仅衡量与参考帧的像素贴合程度。23 / 15 dB 为复查线索，角色、动作与衔接仍需观看检查。${v?.qualityError ? '本次指标计算失败，视频已保留。' : ''}</p>${v ? `<div class="review-options">${[['pending', '待检查'], ['approved', '检查通过'], ['rejected', '需要返工']].map(([review, title]) => `<button class="${v.review === review ? 'selected' : ''}" data-review="${review}">${title}</button>`).join('')}</div>` : ''}` : ''}<form id="item-form">${kind === 'image' ? `<div class="field"><label for="item-title">分镜标题</label><input id="item-title" name="title" maxlength="200" value="${esc(d.title)}"></div><div class="field"><label for="item-description">脚本原文</label><textarea id="item-description" name="description" rows="2">${esc(d.description)}</textarea></div>` : `<div class="field"><label for="item-duration">片段时长（秒）</label><input id="item-duration" name="duration" type="number" min="1" max="10" step="0.1" value="${d.duration}"></div>`}<div class="field"><label for="item-prompt">${kind === 'image' ? '画面提示词' : '动作与运镜提示词'}</label><textarea id="item-prompt" name="prompt" rows="${kind === 'image' ? 4 : 5}" maxlength="12000">${esc(d.prompt)}</textarea></div>${kind === 'image' ? `<div class="field"><label for="item-negative">避免出现的内容</label><textarea id="item-negative" name="negativePrompt" rows="2" maxlength="4000" placeholder="例如：服装变化，多余手指，画面文字">${esc(d.negativePrompt)}</textarea></div>` : ''}<div class="inspector-actions"><button type="submit">保存修改</button><button type="button" class="primary" data-generate="${item.id}" ${generationBlocked(item) ? 'disabled' : ''}>${S.settings.mode === 'mock' ? '模拟生成' : kind === 'image' ? '即梦生成' : 'AutoDL 生成'}</button></div></form><div class="inspector-actions"><button class="ghost small" data-import="${item.id}">从素材库导入</button>${v ? `<a class="small" href="${content(v.assetId)}" download="${esc(asset(v.assetId)?.name || '素材')}">下载素材 ↗</a>` : ''}</div>${kind === 'image' ? `<div class="inspector-actions"><button class="small ghost" data-move="up" ${S.shots[0]?.id === item.id ? 'disabled' : ''}>↑ 前移</button><button class="small ghost" data-move="down" ${S.shots.at(-1)?.id === item.id ? 'disabled' : ''}>↓ 后移</button></div>` : ''}${v ? `<div class="version-meta">${v.mode === 'mock' ? '本地模拟素材' : v.mode === 'imported' ? '导入素材' : `生成服务：${kind === 'image' ? '即梦' : 'AutoDL'}`}<br>${v.externalId ? `任务编号：${esc(v.externalId)}<br>` : ''}${new Date(v.createdAt).toLocaleString('zh-CN')} · ${bytes(v.size)}</div>` : ''}</div></aside>`;
+  const durationMin = kind === 'video' && videoProvider() === 'dreamina' ? 4 : 1;
+  const generateLabel = S.settings.mode === 'mock' ? '模拟生成' : kind === 'image' ? '即梦生成' : videoProvider() === 'dreamina' ? '即梦生成' : 'AutoDL 生成';
+  return `<aside class="panel inspector"><div class="panel-head"><h2>${kind === 'image' ? `分镜 ${num(items().indexOf(item) + 1)}` : `seg_${num(items().indexOf(item) + 1)}`}</h2><span class="spacer"></span>${badge(status(item))}</div><div class="panel-body">${item.stale ? '<div class="inline-warning">首尾帧或生成参数已变更。当前视频保留原版本，更新后再送入剪辑。</div>' : ''}<div class="media-preview">${media}${v?.mode === 'mock' ? '<span class="media-label">模拟素材</span>' : ''}</div>${versionStrip(item)}${kind === 'video' ? `<div class="pair-preview"><div><label>首帧 · ${num(shotNumber(item.fromShotId))}</label>${first ? `<img src="${content(first.assetId)}" alt="首帧">` : '<p class="hint">缺少首帧</p>'}</div><div><label>尾帧 · ${num(shotNumber(item.toShotId))}</label>${last ? `<img src="${content(last.assetId)}" alt="尾帧">` : '<p class="hint">缺少尾帧</p>'}</div></div><div class="quality-scores">${[['firstPSNR', '首帧 PSNR'], ['lastPSNR', '尾帧 PSNR']].map(([key, label]) => `<div class="quality-score"><strong>${v?.[key] == null ? '—' : v[key] >= 100 ? '∞' : v[key].toFixed(1)}</strong><small>${label} · dB</small></div>`).join('')}</div><p class="hint">仅衡量与参考帧的像素贴合程度。23 / 15 dB 为复查线索，角色、动作与衔接仍需观看检查。${v?.qualityError ? '本次指标计算失败，视频已保留。' : ''}</p>${v ? `<div class="review-options">${[['pending', '待检查'], ['approved', '检查通过'], ['rejected', '需要返工']].map(([review, title]) => `<button class="${v.review === review ? 'selected' : ''}" data-review="${review}">${title}</button>`).join('')}</div>` : ''}` : ''}<form id="item-form">${kind === 'image' ? `<div class="field"><label for="item-title">分镜标题</label><input id="item-title" name="title" maxlength="200" value="${esc(d.title)}"></div><div class="field"><label for="item-description">脚本原文</label><textarea id="item-description" name="description" rows="2">${esc(d.description)}</textarea></div>` : `<div class="field"><label for="item-duration">片段时长（秒）</label><input id="item-duration" name="duration" type="number" min="${durationMin}" max="10" step="0.1" value="${d.duration}"><p class="hint">${videoProvider() === 'dreamina' ? '即梦路径要求 4–15 秒，当前上限 10 秒。' : '可按片段节奏调整时长。'}</p></div>`}<div class="field"><label for="item-prompt">${kind === 'image' ? '画面提示词' : '动作与运镜提示词'}</label><textarea id="item-prompt" name="prompt" rows="${kind === 'image' ? 4 : 5}" maxlength="12000">${esc(d.prompt)}</textarea></div>${kind === 'image' ? `<div class="field"><label for="item-negative">避免出现的内容</label><textarea id="item-negative" name="negativePrompt" rows="2" maxlength="4000" placeholder="例如：服装变化，多余手指，画面文字">${esc(d.negativePrompt)}</textarea></div>` : ''}<div class="inspector-actions"><button type="submit">保存修改</button><button type="button" class="primary" data-generate="${item.id}" ${generationBlocked(item) ? 'disabled' : ''}>${generateLabel}</button></div></form><div class="inspector-actions"><button class="ghost small" data-import="${item.id}">从素材库导入</button>${v ? `<a class="small" href="${content(v.assetId)}" download="${esc(asset(v.assetId)?.name || '素材')}">下载素材 ↗</a>` : ''}</div>${kind === 'image' ? `<div class="inspector-actions"><button class="small ghost" data-move="up" ${S.shots[0]?.id === item.id ? 'disabled' : ''}>↑ 前移</button><button class="small ghost" data-move="down" ${S.shots.at(-1)?.id === item.id ? 'disabled' : ''}>↓ 后移</button></div>` : ''}${v ? `<div class="version-meta">${v.mode === 'mock' ? '本地模拟素材' : v.mode === 'imported' ? '导入素材' : `生成服务：${kind === 'image' ? '即梦' : 'AutoDL'}`}<br>${v.externalId ? `任务编号：${esc(v.externalId)}<br>` : ''}${new Date(v.createdAt).toLocaleString('zh-CN')} · ${bytes(v.size)}</div>` : ''}</div></aside>`;
 }
 function frameNavigation() {
   return `<section class="panel frame-nav"><div class="filmstrip" aria-label="分镜图片导航">${S.shots.map((shot, i) => { const v = version(shot), seg = current(); return `<button class="frame-cell ${seg && [seg.fromShotId, seg.toShotId].includes(shot.id) ? 'selected' : ''}" data-frame="${shot.id}">${v ? `<img src="${thumb(v.assetId)}" alt="${esc(shot.title)}">` : '<span class="missing">待生图</span>'}<span>${num(i + 1)}</span></button>`; }).join('') || '<p class="hint">准备分镜图后，将在这里显示完整画面序列。</p>'}</div><div class="segment-strip" aria-label="视频片段导航">${S.segments.map(seg => `<button class="segment-pill ${selected === seg.id ? 'selected' : ''}" data-segment="${seg.id}">${num(shotNumber(seg.fromShotId))} → ${num(shotNumber(seg.toShotId))}</button>`).join('')}</div></section>`;
@@ -130,13 +150,14 @@ function render() {
   if (!S) return;
   const ready = S.shots.filter(s => version(s)).length;
   document.title = `CutPot · ${kind === 'image' ? '分镜图创作' : '首尾帧视频创作'}`;
-  $('#app').innerHTML = `${header()}<main class="page" id="workspace"><div class="page-heading"><div><div class="eyebrow">${kind === 'image' ? 'STORYBOARD / 01' : 'MOTION / 02'}</div><h1>${kind === 'image' ? '让故事有画面' : '让画面连成故事'}</h1><p>${kind === 'image' ? '拆分脚本，保持主体一致，逐镜选择满意的画面。' : '用相邻分镜作为首尾帧，生成片段，再检查整条故事的衔接。'}</p></div><div class="page-actions">${kind === 'image' ? `<button data-action="upload-shots">${icon('upload')}导入分镜图</button><button class="primary" data-action="go-videos" ${ready < 2 ? 'disabled' : ''}>下一步 · 首尾帧视频 ${icon('arrow')}</button>` : `<button data-action="go-storyboard">← 返回分镜图</button><button class="primary" data-action="handoff" ${!S.segments.length || S.segments.some(s => !version(s) || s.stale) ? 'disabled' : ''}>送入 CutPot 剪辑 ${icon('arrow')}</button>`}</div></div>${stats()}${error ? `<div class="inline-error" role="alert">${esc(error)} <button class="ghost small" data-action="refresh">刷新数据</button></div>` : ''}${kind === 'image' ? references() + scriptPanel() : frameNavigation() + sequencePanel()}<div class="row spread wrap" style="margin-bottom:16px"><h2>${kind === 'image' ? '分镜画面' : '视频片段'} <small>${items().length} ${kind === 'image' ? '个分镜' : '个片段'}</small></h2><div class="row"><button class="ghost small" data-action="jobs">任务记录 ${S.jobs.filter(j => ['queued', 'running', 'interrupted'].includes(j.status)).length || ''}</button>${kind === 'image' ? '<button class="ghost small" data-action="add-shot">＋ 新增分镜</button>' : ''}<button class="ghost small" data-action="stop-queue" ${S.jobs.some(j => j.status === 'queued') ? '' : 'disabled'}>停止排队</button><button class="primary" data-action="generate-batch" ${!items().length ? 'disabled' : ''}>${selectedIds.size ? `生成所选 ${selectedIds.size} 项` : '生成待完成项'}</button></div></div><div class="workspace-grid"><section aria-label="${kind === 'image' ? '分镜列表' : '片段列表'}">${tools()}<div class="shot-list" id="item-list">${listCards()}</div></section>${inspector()}</div><footer class="footer"><span class="dot"></span><span>已保存到本机 · ${S.settings.mode === 'mock' ? '模拟生成不会调用付费服务' : '真实任务仅在点击生成后提交'}</span><span class="spacer"></span><a href="/editor">打开剪辑工作台 ↗</a><span>CutPot 0.9</span></footer></main>`;
+  const segmentsReady = S.segments.length && !S.segments.some(s => !version(s) || s.stale);
+  $('#app').innerHTML = `${header()}<main class="page" id="workspace"><div class="page-heading"><div><div class="eyebrow">${kind === 'image' ? 'STORYBOARD / 01' : 'MOTION / 02'}</div><h1>${kind === 'image' ? '让故事有画面' : '让画面连成故事'}</h1><p>${kind === 'image' ? '拆分脚本，保持主体一致，逐镜选择满意的画面。' : '用相邻分镜作为首尾帧，生成片段，再检查整条故事的衔接。'}</p></div><div class="page-actions">${kind === 'image' ? `<button data-action="export-shots">${icon('download')}导出分镜流</button><button data-action="upload-shots">${icon('upload')}导入分镜图</button><button class="primary" data-action="go-videos" ${ready < 2 ? 'disabled' : ''}>下一步 · 首尾帧视频 ${icon('arrow')}</button>` : `<button data-action="go-storyboard">← 返回分镜图</button><button data-action="export-segments" ${segmentsReady ? '' : 'disabled'}>${icon('download')}导出拼接视频</button><button class="primary" data-action="handoff" ${segmentsReady ? '' : 'disabled'}>送入 CutPot 剪辑 ${icon('arrow')}</button>`}</div></div>${stats()}${error ? `<div class="inline-error" role="alert">${esc(error)} <button class="ghost small" data-action="refresh">刷新数据</button></div>` : ''}${kind === 'image' ? references() + scriptPanel() : frameNavigation() + sequencePanel()}<div class="row spread wrap" style="margin-bottom:16px"><h2>${kind === 'image' ? '分镜画面' : '视频片段'} <small>${items().length} ${kind === 'image' ? '个分镜' : '个片段'}</small></h2><div class="row"><button class="ghost small" data-action="jobs">任务记录 ${S.jobs.filter(j => ['queued', 'running', 'interrupted'].includes(j.status)).length || ''}</button>${kind === 'image' ? '<button class="ghost small" data-action="add-shot">＋ 新增分镜</button>' : ''}<button class="ghost small" data-action="stop-queue" ${S.jobs.some(j => j.status === 'queued') ? '' : 'disabled'}>停止排队</button><button class="primary" data-action="generate-batch" ${!items().length ? 'disabled' : ''}>${selectedIds.size ? `生成所选 ${selectedIds.size} 项` : '生成待完成项'}</button></div></div><div class="workspace-grid"><section aria-label="${kind === 'image' ? '分镜列表' : '片段列表'}">${tools()}<div class="shot-list" id="item-list">${listCards()}</div></section>${inspector()}</div><footer class="footer"><span class="dot"></span><span>已保存到本机 · ${S.settings.mode === 'mock' ? '模拟生成不会调用付费服务' : '真实任务仅在点击生成后提交'}</span><span class="spacer"></span><a href="/editor">打开剪辑工作台 ↗</a><span>CutPot 0.9</span></footer></main>`;
   lastSignature = signature(S);
 }
 function modal(html) { const d = $('#modal'); d.innerHTML = html; if (!d.open) d.showModal(); }
 const closeButton = '<button data-action="close-modal">关闭</button>';
 function settings() {
-  modal(`<h2>生成设置</h2><p>图片使用即梦，视频使用 AutoDL 首尾帧模式。模拟模式在本机生成带标记的测试素材，帮助你检查完整操作流程。</p><form id="settings-form"><div class="field"><label for="mode">服务模式</label><select name="mode" id="mode"><option value="mock" ${S.settings.mode === 'mock' ? 'selected' : ''}>模拟模式 · 不调用付费服务</option><option value="live" ${S.settings.mode === 'live' ? 'selected' : ''}>真实生成 · 点击生成会消耗积分或算力</option></select></div><div class="field-grid"><div class="field"><label>画幅</label><select name="ratio">${['16:9', '9:16', '1:1'].map(r => `<option ${r === S.settings.ratio ? 'selected' : ''}>${r}</option>`).join('')}</select></div><div class="field"><label>即梦图片分辨率</label><select name="resolution">${['2k', '4k'].map(r => `<option ${r === S.settings.resolution ? 'selected' : ''}>${r}</option>`).join('')}</select></div></div><div class="field"><label>每镜图片候选数</label><select name="candidates">${[1, 2, 4, 6, 8, 10].map(n => `<option ${n === S.settings.candidates ? 'selected' : ''}>${n}</option>`).join('')}</select></div><p class="hint">真实模式复用本机 dreamina 与 autodl-cli 的登录和连接配置。服务不可用时显示失败原因，不切换服务。</p><div class="dialog-actions">${closeButton}<button class="primary" type="submit">保存设置</button></div></form>`);
+  modal(`<h2>生成设置</h2><p>图片固定走即梦；视频可在即梦 CLI 首尾帧与 AutoDL 首尾帧之间切换。模拟模式在本机生成带标记的测试素材，帮助你检查完整操作流程。</p><form id="settings-form"><div class="field"><label for="mode">服务模式</label><select name="mode" id="mode"><option value="mock" ${S.settings.mode === 'mock' ? 'selected' : ''}>模拟模式 · 不调用付费服务</option><option value="live" ${S.settings.mode === 'live' ? 'selected' : ''}>真实生成 · 点击生成会消耗积分或算力</option></select></div><div class="field"><label for="videoProvider">视频生成路径</label><select name="videoProvider" id="videoProvider"><option value="autodl" ${videoProvider() === 'autodl' ? 'selected' : ''}>AutoDL · 视频（首尾帧）</option><option value="dreamina" ${videoProvider() === 'dreamina' ? 'selected' : ''}>即梦 CLI · 视频（frames2video）</option></select></div><div class="field-grid"><div class="field"><label>画幅</label><select name="ratio">${['16:9', '9:16', '1:1'].map(r => `<option ${r === S.settings.ratio ? 'selected' : ''}>${r}</option>`).join('')}</select></div><div class="field"><label>即梦图片分辨率</label><select name="resolution">${['2k', '4k'].map(r => `<option ${r === S.settings.resolution ? 'selected' : ''}>${r}</option>`).join('')}</select></div></div><div class="field"><label>每镜图片候选数</label><select name="candidates">${[1, 2, 4, 6, 8, 10].map(n => `<option ${n === S.settings.candidates ? 'selected' : ''}>${n}</option>`).join('')}</select></div><p class="hint">真实模式复用本机 dreamina 与 autodl-cli 的登录和连接配置。服务不可用时显示失败原因，不自动改走另一路径。即梦视频时长须 4–15 秒。</p><div class="dialog-actions">${closeButton}<button class="primary" type="submit">保存设置</button></div></form>`);
 }
 function library(target, type = kind) {
   uploadTarget = target;
@@ -184,6 +205,192 @@ function playSequenceItem() {
   video.play().catch(() => { notify('请点击播放器播放，浏览器阻止了自动播放。'); });
 }
 function stopSequence() { sequencePlaying = false; $('#sequence-video')?.pause(); }
+async function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('图片读取失败'));
+    reader.readAsDataURL(blob);
+  });
+}
+async function imageDataUrl(assetId) {
+  if (!assetId) return '';
+  const res = await fetch(content(assetId));
+  if (!res.ok) throw new Error(`分镜图读取失败（${assetId}）`);
+  return blobToDataUrl(await res.blob());
+}
+function safeFileName(name) {
+  return String(name || '分镜流').replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || '分镜流';
+}
+function buildStoryboardHtml(shots, images, meta) {
+  const shotBlocks = shots.map((shot, i) => {
+    const n = num(i + 1);
+    const img = images[i];
+    const fields = [
+      ['脚本原文', shot.description],
+      ['画面提示词', shot.prompt],
+      ['避免出现', shot.negativePrompt]
+    ].filter(([, text]) => String(text || '').trim());
+    return `<article class="shot" id="shot-${n}">
+  <header class="shot-head"><span class="shot-index">${n}</span><h2>${esc(shot.title || `分镜 ${n}`)}</h2></header>
+  <div class="shot-media">${img ? `<img src="${img}" alt="${esc(shot.title || `分镜 ${n}`)}">` : '<div class="missing">暂无选用分镜图</div>'}</div>
+  <div class="shot-fields">${fields.map(([label, text]) => `<section><h3>${label}</h3><pre>${esc(text)}</pre></section>`).join('') || '<p class="empty-copy">本镜尚未填写描述词</p>'}</div>
+</article>`;
+  }).join('\n');
+  const toc = shots.map((shot, i) => {
+    const n = num(i + 1);
+    return `<a href="#shot-${n}"><span>${n}</span>${esc(shot.title || `分镜 ${n}`)}</a>`;
+  }).join('');
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(meta.name)} · 分镜流确认稿</title>
+<style>
+:root{color-scheme:light;--ink:#1c1d1a;--muted:#5f6358;--line:#d7d9d0;--panel:#f4f5f0;--accent:#4d6a1f}
+*{box-sizing:border-box}body{margin:0;font:15px/1.6 "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;color:var(--ink);background:#fff}
+.wrap{max-width:880px;margin:0 auto;padding:32px 20px 64px}
+header.cover{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:28px}
+.eyebrow{color:var(--accent);font-size:12px;letter-spacing:.12em;margin:0 0 8px}
+h1{font-size:28px;line-height:1.25;margin:0 0 8px}
+.meta{color:var(--muted);margin:0;font-size:13px}
+.style-box,.script-box{margin-top:16px;padding:14px 16px;background:var(--panel);border-radius:10px;border:1px solid var(--line)}
+.style-box h3,.script-box h3,.shot-fields h3{margin:0 0 8px;font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.04em}
+.style-box pre,.script-box pre,.shot-fields pre{margin:0;white-space:pre-wrap;word-break:break-word;font:inherit}
+.toc{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin:0 0 32px}
+.toc a{display:flex;gap:8px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:8px;color:inherit;text-decoration:none;font-size:13px;overflow:hidden}
+.toc a span{color:var(--accent);font-variant-numeric:tabular-nums;flex-shrink:0}
+.toc a:hover{border-color:var(--accent);background:var(--panel)}
+.shot{border:1px solid var(--line);border-radius:14px;padding:18px;margin:0 0 20px;background:#fff;break-inside:avoid}
+.shot-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.shot-index{font-variant-numeric:tabular-nums;color:var(--accent);font-weight:700;font-size:14px}
+.shot-head h2{margin:0;font-size:18px;line-height:1.3}
+.shot-media{background:#eceee7;border-radius:10px;overflow:hidden;border:1px solid var(--line);min-height:160px;display:grid;place-items:center}
+.shot-media img{display:block;width:100%;max-height:520px;object-fit:contain;background:#111}
+.missing,.empty-copy{color:var(--muted);padding:28px;font-size:13px}
+.shot-fields{display:grid;gap:12px;margin-top:14px}
+.shot-fields section{padding:12px 14px;background:var(--panel);border-radius:10px;border:1px solid var(--line)}
+footer{margin-top:28px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+@media print{body{background:#fff}.toc{display:none}.shot{box-shadow:none;page-break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="cover">
+  <p class="eyebrow">CUTPOT · STORYBOARD REVIEW</p>
+  <h1>${esc(meta.name)}</h1>
+  <p class="meta">分镜流确认稿 · 共 ${shots.length} 镜 · 导出于 ${esc(meta.exportedAt)}${meta.withImage ? ` · 含图 ${meta.withImage} 张` : ''}</p>
+  ${meta.style ? `<div class="style-box"><h3>统一画面风格</h3><pre>${esc(meta.style)}</pre></div>` : ''}
+  ${meta.script ? `<div class="script-box"><h3>完整脚本</h3><pre>${esc(meta.script)}</pre></div>` : ''}
+</header>
+<nav class="toc" aria-label="分镜目录">${toc}</nav>
+${shotBlocks}
+<footer>由 CutPot 导出 · 打开本文件即可离线查看与分享确认 · 图片已内嵌</footer>
+</div>
+</body>
+</html>`;
+}
+async function exportStoryboardFlow() {
+  snapshotDraft();
+  await saveAllDrafts();
+  const shots = S.shots.map(shot => {
+    const draft = drafts.get(shot.id);
+    return draft ? { ...shot, ...draft } : shot;
+  });
+  if (!shots.length) throw new Error('还没有分镜，无法导出分镜流');
+  console.info('[storyboard-export] start', { projectId: S.projectId, shotCount: shots.length });
+  notify(`正在导出分镜流（${shots.length} 镜）…`);
+  const images = [];
+  let withImage = 0;
+  for (let i = 0; i < shots.length; i++) {
+    const v = version(shots[i]);
+    if (!v?.assetId) { images.push(''); continue; }
+    images.push(await imageDataUrl(v.assetId));
+    withImage++;
+    if ((i + 1) % 4 === 0 || i === shots.length - 1) notify(`正在打包分镜图 ${i + 1}/${shots.length}…`);
+  }
+  const scriptDraft = drafts.get('script');
+  const meta = {
+    name: S.name || '未命名项目',
+    exportedAt: new Date().toLocaleString('zh-CN'),
+    style: scriptDraft?.style ?? S.style,
+    script: scriptDraft?.script ?? S.script,
+    withImage
+  };
+  const html = buildStoryboardHtml(shots, images, meta);
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${safeFileName(meta.name)}-分镜流.html`;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  console.info('[storyboard-export] done', { file: a.download, withImage, bytes: blob.size });
+  notify(`已导出分镜流：${shots.length} 镜 · 含图 ${withImage} 张`);
+}
+let exportPoll = null;
+function stopExportPoll() { clearInterval(exportPoll); exportPoll = null; }
+function exportJobView(job) {
+  const file = `${safeFileName(S.name)}-首尾帧拼接.mp4`;
+  const title = job.status === 'completed' ? '拼接视频已就绪' : job.status === 'failed' ? '拼接导出失败' : job.status === 'cancelled' ? '已取消导出' : '正在拼接首尾帧视频';
+  modal(`<h2>${title}</h2><p>${esc(job.name || '')}</p><div class="progress"><span style="width:${Math.max(0, Math.min(100, job.progress || 0))}%"></span></div><p class="job-brief">${esc(job.message || '')}</p>${job.status === 'completed' ? `<p class="hint">按片段顺序硬切拼接，未叠配音与字幕。文件保存在本机 .cutpot/exports。</p>` : ''}<div class="dialog-actions">${job.status === 'running' ? `<button data-cancel-export="${job.id}">取消</button>` : ''}${job.status === 'completed' ? `<button class="primary" data-download-export="${job.id}" data-download-name="${esc(file)}">下载 MP4</button>` : ''}${closeButton}</div>`);
+}
+function monitorExport(id) {
+  stopExportPoll();
+  const tick = async () => {
+    try {
+      const jobs = await api('/api/jobs');
+      const job = jobs.find(j => j.id === id);
+      if (!job) { stopExportPoll(); return; }
+      if (job.status === 'running') {
+        if ($('#modal').open) exportJobView(job);
+        return;
+      }
+      stopExportPoll();
+      exportJobView(job);
+      console.info('[segment-export] finished', { id, status: job.status, message: job.message });
+      if (job.status === 'completed') notify('首尾帧拼接视频已就绪，可下载');
+      else if (job.status === 'failed') notify(`拼接导出失败：${job.message}`);
+    } catch (e) {
+      stopExportPoll();
+      console.warn('[segment-export] poll failed', e.message);
+      notify(`导出状态读取失败：${e.message}`);
+    }
+  };
+  exportPoll = setInterval(tick, 1000);
+  tick();
+}
+async function exportSegmentConcat() {
+  snapshotDraft();
+  await saveItem(false);
+  if (!S.segments.length) throw new Error('还没有视频片段，无法导出');
+  const missing = S.segments.filter(s => !version(s));
+  if (missing.length) throw new Error(`还有 ${missing.length} 个片段未生成或导入视频`);
+  const stale = S.segments.filter(s => s.stale);
+  if (stale.length) throw new Error(`${stale.length} 个片段的首尾帧或参数已变更，请先更新视频`);
+  const fps = 25;
+  const portrait = S.settings.ratio === '9:16';
+  const width = portrait ? 1080 : 1920, height = portrait ? 1920 : 1080;
+  const clips = S.segments.map((seg, i) => {
+    const v = version(seg), a = asset(v.assetId);
+    if (!a || a.type !== 'video') throw new Error(`片段 ${num(i + 1)} 的视频素材无效`);
+    const duration = Math.floor(Math.min(seg.duration, a.duration) * fps) / fps;
+    if (duration < 1 / fps) throw new Error(`片段 ${num(i + 1)} 时长不足一帧`);
+    return { id: crypto.randomUUID(), title: `片段 ${num(i + 1)}`, assetId: a.id, duration, sourceIn: 0, subtitle: '', muted: true, locked: false };
+  });
+  const project = {
+    version: 1, id: S.projectId, name: `${S.name || '未命名项目'}-首尾帧拼接`, fps, width, height,
+    clips, narration: null, music: null, musicVolume: 0.12, burnSubtitles: false, updatedAt: new Date().toISOString()
+  };
+  console.info('[segment-export] start', { projectId: S.projectId, segments: clips.length, width, height });
+  notify(`正在提交拼接导出（${clips.length} 段）…`);
+  const job = await api('/api/render', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) });
+  exportJobView(job);
+  monitorExport(job.id);
+}
 async function runAction(fn) {
   if (busy) return;
   busy = true; document.body.classList.add('busy-overlay');
@@ -192,6 +399,10 @@ async function runAction(fn) {
   finally { busy = false; document.body.classList.remove('busy-overlay'); }
 }
 async function action(name) {
+  if(name==='new-project')return createNewProject({
+    flush:saveAllDrafts,notify,currentName:S.name,
+    onCreated:async()=>{drafts.clear();selected=null;selectedIds.clear();error='';stopExportPoll();await refresh();if(location.pathname!=='/storyboard')location.href='/storyboard';}
+  });
   if(name==='download-project')return saveProjectFile({flush:saveAllDrafts,notify});
   if(name==='open-project')return $('#project-file').click();
   if (name === 'close-modal') return $('#modal').close();
@@ -201,6 +412,8 @@ async function action(name) {
   if (name === 'go-videos') { await saveItem(); snapshotDraft(); const d = drafts.get('script'); if (d) { await commit({ action: 'script', ...d }, false); drafts.delete('script'); } location.href = '/videos'; return; }
   if (name === 'upload-reference') return openUpload('reference');
   if (name === 'reference-library') return library('reference', 'image');
+  if (name === 'export-shots') return exportStoryboardFlow();
+  if (name === 'export-segments') return exportSegmentConcat();
   if (name === 'upload-shots') return openUpload('shots');
   if (name === 'upload-current') { $('#modal').close(); return openUpload(uploadTarget, uploadTarget === 'reference' ? 'image' : kind, uploadTarget === 'reference'); }
   if (name === 'save-script') { snapshotDraft(); await commit({ action: 'script', ...drafts.get('script') }); drafts.delete('script'); notify('脚本与画面风格已保存'); }
@@ -229,9 +442,14 @@ async function action(name) {
   }
   if (name === 'rename') modal(`<h2>重命名项目</h2><form id="rename-form"><label for="rename-input">项目名称</label><input id="rename-input" name="name" maxlength="120" required value="${esc(S.name)}"><div class="dialog-actions">${closeButton}<button class="primary">保存名称</button></div></form>`);
   if (name === 'archives') modal(`<h2>分镜历史</h2><p>重新拆分和调整顺序前会保存历史，图片与视频版本一并保留。</p>${S.archives.length ? [...S.archives].reverse().map(a => `<div class="job-row row spread"><div>${new Date(a.createdAt).toLocaleString('zh-CN')}<p>${a.shots.length} 张分镜 · ${a.segments.length} 个片段</p></div><button class="small" data-restore="${a.id}">恢复此版本</button></div>`).join('') : '<p>暂时没有历史版本。</p>'}<div class="dialog-actions">${closeButton}</div>`);
-  if (name === 'jobs') modal(`<h2>生成任务记录</h2><p>任务编号、输入快照与产物保存在本机。继续查询只跟踪已有任务。</p>${[...S.jobs].reverse().map(j => `<div class="job-row"><div class="row spread"><strong>${j.kind === 'image' ? '分镜图' : '首尾帧视频'} · ${j.mode === 'mock' ? '模拟' : '真实'}</strong>${badge(j.status)}</div><p>${esc(j.message)}</p><code>${esc(j.externalId || j.id)}</code><p>${new Date(j.createdAt).toLocaleString('zh-CN')}</p>${j.status === 'interrupted' && j.externalId ? `<button class="small" data-resume="${j.id}">继续查询已有任务</button>` : ''}</div>`).join('') || '<p>还没有生成任务。</p>'}<div class="dialog-actions">${closeButton}</div>`);
+  if (name === 'jobs') modal(`<h2>生成任务记录</h2><p>任务编号、输入快照与产物保存在本机。继续查询只跟踪已有任务。</p>${[...S.jobs].reverse().map(j => `<div class="job-row"><div class="row spread"><strong>${j.kind === 'image' ? '分镜图' : '首尾帧视频'} · ${j.mode === 'mock' ? '模拟' : '真实'}${j.kind === 'video' && j.provider ? ` · ${j.provider === 'dreamina' ? '即梦' : 'AutoDL'}` : ''}</strong>${badge(j.status)}</div><p>${esc(j.message)}</p><code>${esc(j.externalId || j.id)}</code><p>${new Date(j.createdAt).toLocaleString('zh-CN')}</p>${j.status === 'interrupted' && j.externalId ? `<button class="small" data-resume="${j.id}">继续查询已有任务</button>` : ''}</div>`).join('') || '<p>还没有生成任务。</p>'}<div class="dialog-actions">${closeButton}</div>`);
 }
 document.addEventListener('click', e => {
+  if (providerMenuOpen && !e.target.closest('.provider-stat')) {
+    providerMenuOpen = false;
+    const card = document.querySelector('.provider-stat');
+    if (card) { card.classList.remove('open'); card.querySelector('[data-provider-menu]')?.setAttribute('aria-expanded', 'false'); }
+  }
   const el = e.target.closest('button,[data-select]'); if (!el || el.disabled) return;
   if (e.target.matches('[data-check]')) return;
   if (el.dataset.action) { e.preventDefault(); return runAction(() => action(el.dataset.action)); }
@@ -246,6 +464,27 @@ document.addEventListener('click', e => {
   if (el.dataset.move) return runAction(() => commit({ action: 'move-shot', id: selected, direction: el.dataset.move }));
   if (el.dataset.resume) return runAction(async () => { await commit({ action: 'resume', id: el.dataset.resume }); $('#modal').close(); notify('已继续查询，不会重新提交生成'); });
   if (el.dataset.restore) return askConfirm('恢复历史分镜', '当前分镜也将存入历史，可随时恢复。现有剪辑工程会保留。', '恢复', async () => { drafts.clear(); await commit({ action: 'restore', id: el.dataset.restore }); });
+  if (el.dataset.providerMenu === 'toggle') {
+    e.preventDefault();
+    providerMenuOpen = !providerMenuOpen;
+    render();
+    return;
+  }
+  if (el.dataset.videoProvider) return runAction(async () => {
+    const next = el.dataset.videoProvider;
+    providerMenuOpen = false;
+    if (videoProvider() === next) { render(); return; }
+    await commit({ action: 'settings', settings: { ...S.settings, videoProvider: next } });
+    notify(`已切换到${providerLabel(next)}`);
+  });
+  if (el.dataset.cancelExport) return runAction(async () => { await api(`/api/jobs/${el.dataset.cancelExport}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); notify('已请求取消拼接导出'); });
+  if (el.dataset.downloadExport) {
+    const a = document.createElement('a');
+    a.href = `/api/exports/${el.dataset.downloadExport}/film.mp4`;
+    a.download = el.dataset.downloadName || `${safeFileName(S.name)}-首尾帧拼接.mp4`;
+    document.body.append(a); a.click(); a.remove();
+    return;
+  }
   if (el.dataset.frame) { const seg = S.segments.find(s => s.fromShotId === el.dataset.frame) || S.segments.find(s => s.toShotId === el.dataset.frame); if (seg) select(seg.id); return; }
   if (el.dataset.segment) return select(el.dataset.segment);
   if (el.dataset.playSegment) return startSequence(el.dataset.playSegment);
@@ -263,7 +502,12 @@ document.addEventListener('submit', e => {
   e.preventDefault();
   runAction(async () => {
     if (e.target.id === 'item-form') { await saveItem(true); notify('当前项已保存'); }
-    if (e.target.id === 'settings-form') { snapshotDraft(); await commit({ action: 'settings', settings: Object.fromEntries(new FormData(e.target)) }); $('#modal').close(); notify('生成设置已保存'); }
+    if (e.target.id === 'settings-form') {
+      snapshotDraft();
+      const raw = Object.fromEntries(new FormData(e.target));
+      await commit({ action: 'settings', settings: { ...S.settings, ...raw, candidates: Number(raw.candidates) } });
+      $('#modal').close(); notify('生成设置已保存');
+    }
     if (e.target.id === 'rename-form') { const state = await api('/api/state'); if (state.projectRevision !== S.editorRevision) throw new Error('工程已更新，请刷新后重命名'); await api('/api/project', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'If-Match': S.editorRevision }, body: JSON.stringify({ ...state.project, name: e.target.elements.name.value }) }); $('#modal').close(); await refresh(); }
   });
 });

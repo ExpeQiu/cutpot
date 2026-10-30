@@ -1,3 +1,4 @@
+import { workflowCommand } from './workflow-cli.js';
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { createReadStream, createWriteStream, constants } from 'node:fs';
@@ -10,24 +11,30 @@ import path from 'node:path';
 import { defaultProject, validateProject, autoArrange } from './project.js';
 import { timelineDuration } from '../public/timeline.js';
 import { probe, run } from './render.js';
+import { ManifestIssue, manifestSchema, validateManifestFile, dryRunManifest } from './manifest.js';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const version = '0.9.0';
+const apiVersion = 1;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const definitions = {
+  'authorize-live':{type:'boolean'},
   json:{type:'boolean',short:'j'}, help:{type:'boolean',short:'h'}, version:{type:'boolean',short:'v'},
   url:{type:'string'}, port:{type:'string'}, data:{type:'string'}, force:{type:'boolean',short:'f'},
   output:{type:'string',short:'o'}, name:{type:'string'}, fps:{type:'string'}, resolution:{type:'string'},
   duration:{type:'string'}, in:{type:'string'}, title:{type:'string'}, subtitle:{type:'string'}, asset:{type:'string'},
   at:{type:'string'}, to:{type:'string'}, 'keep-audio':{type:'boolean'}, mute:{type:'boolean'},
   lock:{type:'boolean'}, unlock:{type:'boolean'}, narration:{type:'string'}, music:{type:'string'},
-  'music-volume':{type:'string'}, 'no-wait':{type:'boolean'}, timeout:{type:'string'},
+  'music-volume':{type:'string'}, 'no-wait':{type:'boolean'}, timeout:{type:'string'}, 'dry-run':{type:'boolean'},
   provider:{type:'string'}, voice:{type:'string'}, speed:{type:'string'}, text:{type:'string'}, file:{type:'string'}, attach:{type:'boolean'},
   preset:{type:'string'},category:{type:'string'},
   target:{type:'string'},style:{type:'string'},endpoint:{type:'string'},'reference-audio':{type:'string'},'prompt-text':{type:'string'},'age-group':{type:'string'},'character-id':{type:'string'},'character-name':{type:'string'},dialogue:{type:'string'},'burn-subtitles':{type:'boolean'},
 };
 const commands = {
+  'workflow show':[], 'workflow apply':['authorize-live'], 'workflow generate':['authorize-live'],
+  'workflow wait':['timeout'], 'workflow handoff':[],
   start: ['port','data'], serve:['port','data'], stop:['force'], status:[], doctor:[], probe:[],
+  capabilities:[], 'schema manifest':[], validate:[],
   'project show':[], 'project new':['name','fps','resolution','force'], 'project save':['force'], 'project open':['force'],
   'assets list':[], 'assets import':[], 'clip list':[],
   'clip add':['duration','in','title','subtitle','at','keep-audio','mute','lock'],
@@ -36,7 +43,7 @@ const commands = {
   'audio set':['narration','music','music-volume'],
   export:['output','force','no-wait','timeout','burn-subtitles'],
   compose:['output','force','no-wait','timeout','burn-subtitles','fps','resolution','name','duration','keep-audio','mute','narration','music','music-volume'],
-  render:['output','force','no-wait','timeout','burn-subtitles'], jobs:[], job:[], cancel:[], download:['output','force'],
+  render:['output','force','no-wait','timeout','burn-subtitles','dry-run'], jobs:[], job:[], 'job wait':['timeout'], cancel:[], download:['output','force'],
   'tts providers':[], 'tts voices':['provider','category'], 'tts generate':['provider','voice','preset','speed','target','style','text','file','dialogue','name','output','force','no-wait','timeout','attach'],
   'tts config':[], 'tts configure':['endpoint','reference-audio','prompt-text','age-group','character-id','character-name'],
   'tts jobs':[], 'tts job':[], 'tts cancel':[], 'tts download':['output','force'],
@@ -50,7 +57,17 @@ export const help = `CutPot CLI ${version} — 本地视频编辑、合成与导
   start [--port 4317] [--data DIR]     后台启动；编辑/导出命令也会按需启动
   serve [--port 4317] [--data DIR]     前台运行工作台，Ctrl+C 停止
   status | stop [--force]              查询 / 停止本地服务
-  doctor | probe FILE                检查依赖 / 读取素材参数
+  doctor | probe FILE                  检查依赖 / 读取素材参数
+  capabilities [--json]                返回 CLI/API/清单能力与依赖就绪状态
+  schema manifest [--json]             版本化清单字段定义与示例
+
+创作工作流（分镜图 → 首尾帧视频 → 剪辑）
+  workflow show                       查看分镜、首尾帧片段、候选版本与生成任务
+  workflow apply ACTION.json           执行单个工作流操作；真实生成需 --authorize-live
+  workflow generate image|video all|ID... [--authorize-live]
+                                      排队生成分镜图 / 首尾帧视频，返回新增任务 ID
+  workflow wait ID... [--timeout SEC]  等待指定生成任务；超时不取消远端任务
+  workflow handoff                    将已选视频版本送入剪辑
 
 工程与素材
   project show                        查看当前工程、镜头与音轨
@@ -83,16 +100,19 @@ export const help = `CutPot CLI ${version} — 本地视频编辑、合成与导
 合成与导出
   compose FILE... -o film.mp4          按文件顺序直接合成，不替换当前时间线
       [--duration SEC] [--narration FILE] [--music FILE] [--keep-audio]
+  validate MANIFEST.json               执行前检查清单（不导入、不改工作台）
   render MANIFEST.json -o film.mp4     按含本地文件路径的镜头清单合成
+  render MANIFEST.json --dry-run       预览帧量化计划与阻塞项，不导入不渲染
   export -o film.mp4 [--burn-subtitles] 导出当前时间线；可将字幕直接烧录至画面
-  jobs | job ID | cancel ID            查询 / 取消任务
+  jobs | job ID | job wait ID | cancel ID  查询 / 等待 / 取消任务
   download ID -o film.mp4              下载已完成任务（也支持服务重启前的 ID）
 
 通用：--json / -j 为脚本输出 JSON；进度写入 stderr；失败退出码为 1。
+      错误 JSON 含 error / code / retryable，可能含 clip / field。
       --url http://127.0.0.1:4317 或 CUTPOT_URL 指定本地服务。
 输出：MP4 + 同名 .srt / .project.json / .report.json；覆盖需 --force。
 格式：--resolution 1920x1080|1280x720|1080x1920；--fps 24|25|30。
-导出：--no-wait 仅提交任务；--timeout SEC 超时取消；Ctrl+C 取消等待中的导出。
+导出：--no-wait 仅提交任务；job wait ID 等待已有任务；--timeout SEC 超时取消；Ctrl+C 取消等待中的导出。
 清单格式与完整示例：${path.join(workspace,'docs','cutpot-cli.md')}
 `;
 
@@ -213,32 +233,129 @@ async function downloadJob(base,id,options) {
     return {id,output:files[0][1],subtitles:files[1][1],project:files[2][1],report:files[3][1]};
   }finally{for(const [temp]of tempFiles)await rm(temp,{force:true});}
 }
-async function exportProject(base, project, options) {
-  if(!project.clips.length)throw new Error('工程中没有镜头');
-  // Validate the timeout before submitting a render job.
+function cliError(message,{code='ERROR',clip=null,field=null,retryable=false,exitCode=1}={}){
+  const e=new Error(message);e.code=code;e.clip=clip;e.field=field;e.retryable=retryable;e.exitCode=exitCode;return e;
+}
+function errorPayload(e){
+  if(e instanceof ManifestIssue)return e.toJSON();
+  return {
+    error:e.message,
+    code:e.code||'ERROR',
+    ...(e.clip!=null?{clip:e.clip}:{}),
+    ...(e.field?{field:e.field}:{}),
+    retryable:Boolean(e.retryable),
+  };
+}
+async function waitExportJob(base,jobId,options,{download=true}={}){
   const timeout=options.timeout!==undefined?number(options.timeout,'超时秒数',{min:.1}):null;
-  if(!options['no-wait'])await checkDestinations(options);
-  const state=await request(base,'/api/state');validateProject(project,state.assets);
-  const job=await send(base,'/api/render',{...project,...(options['burn-subtitles']!==undefined?{burnSubtitles:options['burn-subtitles']}:{})});
-  if(options['no-wait'])return job;
   let interrupted=false,lastMessage='';
   const interrupt=()=>{interrupted=true;};process.once('SIGINT',interrupt);process.once('SIGTERM',interrupt);
   const started=Date.now();
   try{
     while(true){
-      const jobs=await request(base,'/api/jobs'),status=jobs.find(j=>j.id===job.id);
-      if(!status)throw new Error('服务重启或任务不存在，请检查导出目录');
+      const jobs=await request(base,'/api/jobs'),status=jobs.find(j=>j.id===jobId);
+      if(!status)throw cliError('服务重启或任务不存在，请检查导出目录',{code:'JOB_MISSING',retryable:true});
       if(status.message!==lastMessage){process.stderr.write(`[${status.progress}%] ${status.message}\n`);lastMessage=status.message;}
-      if(status.status==='completed')return {...await downloadJob(base,job.id,options),status:'completed'};
-      if(status.status==='failed'||status.status==='cancelled')throw new Error(status.message);
+      if(status.status==='completed')return download&&options.output?{...await downloadJob(base,jobId,options),status:'completed'}:{...status,status:'completed'};
+      if(status.status==='failed')throw cliError(status.message,{code:'JOB_FAILED',retryable:false});
+      if(status.status==='cancelled')throw cliError(status.message,{code:'JOB_CANCELLED',retryable:false});
       if(interrupted||timeout!==null&&Date.now()-started>timeout*1000){
-        const cancelled=await send(base,`/api/jobs/${job.id}/cancel`,{});
-        if(cancelled.status==='completed')return {...await downloadJob(base,job.id,options),status:'completed'};
-        const error=new Error(interrupted?'已请求取消导出':'等待超时，已请求取消导出');error.exitCode=interrupted?130:1;throw error;
+        const cancelled=await send(base,`/api/jobs/${jobId}/cancel`,{});
+        if(cancelled.status==='completed')return download&&options.output?{...await downloadJob(base,jobId,options),status:'completed'}:{...cancelled,status:'completed'};
+        const error=cliError(interrupted?'已请求取消导出':'等待超时，已请求取消导出',{code:interrupted?'JOB_INTERRUPTED':'JOB_TIMEOUT',retryable:true,exitCode:interrupted?130:1});
+        throw error;
       }
       await sleep(200);
     }
   }finally{process.removeListener('SIGINT',interrupt);process.removeListener('SIGTERM',interrupt);}
+}
+async function exportProject(base, project, options) {
+  if(!project.clips.length)throw cliError('工程中没有镜头',{code:'PROJECT_EMPTY'});
+  if(!options['no-wait'])await checkDestinations(options);
+  const state=await request(base,'/api/state');validateProject(project,state.assets);
+  const job=await send(base,'/api/render',{...project,...(options['burn-subtitles']!==undefined?{burnSubtitles:options['burn-subtitles']}:{})});
+  if(options['no-wait'])return job;
+  return waitExportJob(base,job.id,options,{download:true});
+}
+async function checkBinary(name,args=['-version']){
+  try{await run(name,args);return {ok:true};}catch(e){return {ok:false,error:e.message};}
+}
+async function checkPythonSubtitles(){
+  const managed=path.join(workspace,'.cutpot','subtitle-runtime',process.platform==='win32'?'Scripts/python.exe':'bin/python');
+  const python=process.env.CUTPOT_SUBTITLE_PYTHON||(await exists(managed)?managed:'python3');
+  const result={supported:true,ready:false,python,pillow:false,font:false};
+  try{
+    const out=await run(python,['-c','import PIL,sys;print(PIL.__version__);print(sys.executable)']);
+    result.pillow=true;result.pythonVersion=out.trim().split('\n')[0];
+  }catch(e){result.error=e.message;return result;}
+  try{
+    await run(python,['-c',"from PIL import ImageFont; ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 24) if __import__('sys').platform=='darwin' else ImageFont.load_default()"]);
+    result.font=true;
+  }catch{result.font=false;}
+  result.ready=result.pillow;
+  return result;
+}
+async function doctorReport(base){
+  const ffmpeg=await checkBinary('ffmpeg');
+  const ffprobe=await checkBinary('ffprobe');
+  let libx264=false;
+  if(ffmpeg.ok){try{libx264=(await run('ffmpeg',['-hide_banner','-encoders'])).includes('libx264');}catch{}}
+  const subtitles=await checkPythonSubtitles();
+  const tts={supported:true,ready:false,providers:[]};
+  try{
+    await run('say',['-v','?']);
+    tts.providers.push({id:'macos',supported:true,ready:process.platform==='darwin'});
+  }catch{tts.providers.push({id:'macos',supported:true,ready:false});}
+  try{
+    const service=await health(base);
+    if(service.capabilities?.includes('tts')){
+      try{
+        const providers=await request(base,'/api/tts/providers');
+        tts.providers=providers.providers||providers;
+        tts.ready=(tts.providers||[]).some(p=>p.available);
+        tts.service=true;
+      }catch(e){tts.serviceError=e.message;}
+    }
+  }catch{tts.service=false;}
+  const result={
+    ok:ffmpeg.ok&&ffprobe.ok&&libx264,
+    node:process.version,
+    version,
+    apiVersion,
+    dependencies:{
+      ffmpeg:{supported:true,ready:ffmpeg.ok},
+      ffprobe:{supported:true,ready:ffprobe.ok},
+      libx264:{supported:true,ready:libx264},
+      burnSubtitles:subtitles,
+      tts,
+    },
+    // Keep flat flags for older scripts.
+    ffmpeg:ffmpeg.ok,ffprobe:ffprobe.ok,libx264,
+  };
+  console.error('[doctor]',JSON.stringify({ok:result.ok,ffmpeg:result.ffmpeg,ffprobe:result.ffprobe,libx264,subtitles:subtitles.ready,tts:tts.ready}));
+  return result;
+}
+async function capabilitiesReport(base){
+  let service=null;
+  try{service=await health(base);}catch{service=null;}
+  const doctor=await doctorReport(base);
+  return {
+    app:'cutpot',
+    version,
+    apiVersion,
+    manifestSchemaVersion:manifestSchema().schemaVersion,
+    service:service?{running:true,url:service.url||base,dataDir:service.dataDir,capabilities:service.capabilities}:{running:false,url:base},
+    commands:Object.keys(commands).sort(),
+    features:{
+      compose:true,render:true,validate:true,dryRun:true,projectEdit:true,tts:true,burnSubtitles:true,jobWait:true,
+    },
+    dependencies:doctor.dependencies,
+    ready:{
+      render:doctor.ok,
+      burnSubtitles:doctor.dependencies.burnSubtitles.ready,
+      tts:doctor.dependencies.tts.ready||doctor.dependencies.tts.providers?.some?.(p=>p.ready||p.available),
+    },
+  };
 }
 async function manifestProject(base,file){
   const absolute=path.resolve(file),input=JSON.parse(await readFile(absolute,'utf8'));
@@ -341,24 +458,40 @@ export async function main(argv) {
     if(options.version){console.log(options.json?JSON.stringify({version}):version);return 0;}
     const args=parsed.positionals;
     if(options.help||args.length===0||args[0]==='help'){console.log(options.json?JSON.stringify({help}):help);return 0;}
-    const command=['project','assets','clip','audio','tts'].includes(args[0])?`${args.shift()} ${args.shift()}`:args.shift();
-    if(!commands[command])throw new Error(`未知命令：${command}；使用 cutpot-cli --help 查看用法`);
+    let command;
+    if(['project','assets','clip','audio','tts','schema','workflow'].includes(args[0])){
+      const head=args.shift(),tail=args.shift();
+      if(tail===undefined)throw cliError(`${head} 需要子命令；使用 cutpot-cli --help 查看用法`,{code:'UNKNOWN_COMMAND'});
+      command=`${head} ${tail}`;
+    }else if(args[0]==='job'&&args[1]==='wait'){args.shift();args.shift();command='job wait';}
+    else command=args.shift();
+    if(!commands[command])throw cliError(`未知命令：${command}；使用 cutpot-cli --help 查看用法`,{code:'UNKNOWN_COMMAND'});
     const allowed=new Set(['url','json','help','version',...commands[command]]);
-    for(const key of Object.keys(options))if(!allowed.has(key))throw new Error(`${command} 不支持 --${key}`);
-    if(options.mute&&options['keep-audio'])throw new Error('--mute 与 --keep-audio 不能同时使用');
-    if(options.lock&&options.unlock)throw new Error('--lock 与 --unlock 不能同时使用');
-    if(options['no-wait']&&(options.output!==undefined||options.timeout!==undefined||options.force))throw new Error('--no-wait 仅提交任务，不能与 --output、--timeout 或 --force 同用；完成后使用 download ID -o FILE');
-    const minMax={probe:[1,1],'project save':[1,1],'project open':[1,1],'assets import':[1,2000],'clip add':[1,1],'clip edit':[1,1],'clip remove':[1,1],'clip duplicate':[1,1],'clip move':[1,1],compose:[1,2000],render:[1,1],job:[1,1],cancel:[1,1],download:[1,1],'tts job':[1,1],'tts cancel':[1,1],'tts download':[1,1]};
-    const [min,max]=minMax[command]||[0,0];if(args.length<min||args.length>max)throw new Error(`${command} 需要 ${min===max?min:`${min}—${max}`} 个位置参数`);
+    for(const key of Object.keys(options))if(!allowed.has(key))throw cliError(`${command} 不支持 --${key}`,{code:'UNKNOWN_OPTION'});
+    if(options.mute&&options['keep-audio'])throw cliError('--mute 与 --keep-audio 不能同时使用',{code:'OPTION_CONFLICT'});
+    if(options.lock&&options.unlock)throw cliError('--lock 与 --unlock 不能同时使用',{code:'OPTION_CONFLICT'});
+    if(options['no-wait']&&(options.output!==undefined||options.timeout!==undefined||options.force||options['dry-run']))throw cliError('--no-wait 仅提交任务，不能与 --output、--timeout、--force 或 --dry-run 同用；完成后使用 download ID -o FILE 或 job wait ID',{code:'OPTION_CONFLICT'});
+    if(options['dry-run']&&(options['no-wait']||options.timeout!==undefined||options.force||options['burn-subtitles']))throw cliError('--dry-run 不能与 --no-wait、--timeout、--force 或 --burn-subtitles 同用',{code:'OPTION_CONFLICT'});
+    const minMax={'workflow apply':[1,1],'workflow generate':[2,101],'workflow wait':[1,100],probe:[1,1],validate:[1,1],'schema manifest':[0,0],'project save':[1,1],'project open':[1,1],'assets import':[1,2000],'clip add':[1,1],'clip edit':[1,1],'clip remove':[1,1],'clip duplicate':[1,1],'clip move':[1,1],compose:[1,2000],render:[1,1],job:[1,1],'job wait':[1,1],cancel:[1,1],download:[1,1],'tts job':[1,1],'tts cancel':[1,1],'tts download':[1,1]};
+    const [min,max]=minMax[command]||[0,0];if(args.length<min||args.length>max)throw cliError(`${command} 需要 ${min===max?min:`${min}—${max}`} 个位置参数`,{code:'ARGUMENT_COUNT'});
     const port=options.port===undefined?null:number(options.port,'端口',{min:1,max:65535,integer:true});
     const base=localURL(options.url||process.env.CUTPOT_URL||`http://127.0.0.1:${port??4317}`);
-    if(port!==null&&Number(new URL(base).port||80)!==port)throw new Error('--port 与 --url 指向不同端口');
+    if(port!==null&&Number(new URL(base).port||80)!==port)throw cliError('--port 与 --url 指向不同端口',{code:'OPTION_CONFLICT'});
     let result;
     if(command==='doctor'){
-      result={node:process.version,ffmpeg:false,ffprobe:false,libx264:false};
-      try{await run('ffmpeg',['-version']);result.ffmpeg=true;result.libx264=(await run('ffmpeg',['-hide_banner','-encoders'])).includes('libx264');}catch{}
-      try{await run('ffprobe',['-version']);result.ffprobe=true;}catch{}
-      result.ok=result.ffmpeg&&result.ffprobe&&result.libx264;
+      result=await doctorReport(base);
+      console.log(options.json?JSON.stringify(result):JSON.stringify(result,null,2));return result.ok?0:1;
+    }else if(command==='capabilities'){
+      result=await capabilitiesReport(base);
+      console.log(options.json?JSON.stringify(result):JSON.stringify(result,null,2));return 0;
+    }else if(command==='schema manifest'){
+      result=manifestSchema();
+      console.log(options.json?JSON.stringify(result):JSON.stringify(result,null,2));return 0;
+    }else if(command==='validate'){
+      result=await validateManifestFile(args[0]);
+      console.log(options.json?JSON.stringify(result):JSON.stringify(result,null,2));return result.ok?0:1;
+    }else if(command==='render'&&options['dry-run']){
+      result=await dryRunManifest(args[0],{output:options.output});
       console.log(options.json?JSON.stringify(result):JSON.stringify(result,null,2));return result.ok?0:1;
     }else if(command==='probe')result={file:path.resolve(args[0]),...await probe(path.resolve(args[0]))};
     else if(command==='start')result=await start(base,options.data);
@@ -372,7 +505,10 @@ export async function main(argv) {
     else{
       const service=await connect(base);
       if(options['burn-subtitles']&&!service.capabilities.includes('burn-subtitles'))throw new Error('请重启 CutPot 加载字幕烧录功能');
-      if(command.startsWith('tts ')){
+      if(command.startsWith('workflow ')){
+        if(!service.capabilities?.includes('storyboard'))throw new Error('请重启 CutPot 加载创作工作流功能');
+        result=await workflowCommand(base,command,args,options,{request,send});
+      }else if(command.startsWith('tts ')){
         if(!service.capabilities?.includes('tts'))throw new Error('当前服务不支持 TTS，请先 cutpot-cli stop，再 cutpot-cli start');
         if((options.preset!==undefined||options.category!==undefined)&&!service.capabilities.includes('tts-child-presets')||options.provider==='gpt-sovits'&&!service.capabilities.includes('tts-gpt-sovits'))throw new Error('当前服务尚未加载儿童音色功能，请先 cutpot-cli stop，再 cutpot-cli start');
         if((options.dialogue!==undefined||options['character-id']!==undefined)&&!service.capabilities.includes('tts-dialogue'))throw new Error('请重启 CutPot 加载多角色配音功能');
@@ -381,8 +517,15 @@ export async function main(argv) {
       }
       else if(command==='assets import'){result=[];for(const file of args)result.push(await upload(base,file));}
       else if(command==='jobs')result=await request(base,'/api/jobs');
-      else if(command==='job'){result=(await request(base,'/api/jobs')).find(j=>j.id===args[0]);if(!result)throw new Error('任务不存在（任务列表仅保留本次服务会话）');}
-      else if(command==='cancel'){const jobs=await request(base,'/api/jobs');if(!jobs.some(j=>j.id===args[0]&&j.status==='running'))throw new Error('没有这个正在运行的任务');result=await send(base,`/api/jobs/${args[0]}/cancel`,{});}
+      else if(command==='job'){result=(await request(base,'/api/jobs')).find(j=>j.id===args[0]);if(!result)throw cliError('任务不存在（任务列表仅保留本次服务会话）',{code:'JOB_MISSING',retryable:true});}
+      else if(command==='job wait'){
+        if(!/^[a-f\d-]{36}$/i.test(args[0]))throw cliError('任务 ID 无效',{code:'JOB_ID_INVALID'});
+        const existing=(await request(base,'/api/jobs')).find(j=>j.id===args[0]);
+        if(!existing)throw cliError('任务不存在（任务列表仅保留本次服务会话）',{code:'JOB_MISSING',retryable:true});
+        console.error('[job wait]',JSON.stringify({id:args[0],status:existing.status}));
+        result=await waitExportJob(base,args[0],options,{download:false});
+      }
+      else if(command==='cancel'){const jobs=await request(base,'/api/jobs');if(!jobs.some(j=>j.id===args[0]&&j.status==='running'))throw cliError('没有这个正在运行的任务',{code:'JOB_NOT_RUNNING'});result=await send(base,`/api/jobs/${args[0]}/cancel`,{});}
       else if(command==='download')result=await downloadJob(base,args[0],options);
       else if(command==='render')result=await exportProject(base,await manifestProject(base,args[0]),options);
       else if(command==='compose'){
@@ -446,8 +589,9 @@ export async function main(argv) {
     }
     console.log(options.json?JSON.stringify(result):JSON.stringify(result,null,2));return 0;
   }catch(e){
-    if(options.json||argv.includes('--json')||argv.includes('-j'))console.log(JSON.stringify({error:e.message}));
-    else console.error(`cutpot-cli: ${e.message}`);
+    const payload=errorPayload(e);
+    if(options.json||argv.includes('--json')||argv.includes('-j'))console.log(JSON.stringify(payload));
+    else console.error(`cutpot-cli: ${payload.error}${payload.code&&payload.code!=='ERROR'?` [${payload.code}]`:''}`);
     return e.exitCode??1;
   }
 }
