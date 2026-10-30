@@ -1,15 +1,19 @@
 {
   "name": "cutpot",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
-  "description": "Local storyboard-driven video assembly workspace",
-  "bin": { "cutpot-cli": "bin/cutpot-cli.js" },
+  "description": "Storyboard to first-last-frame video creation pipeline",
+  "bin": {
+    "cutpot-cli": "bin/cutpot-cli.js"
+  },
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
-    "check": "node --check bin/cutpot-cli.js && node --check src/cli.js && node --check src/server.js && node --check src/render.js && node --check src/project.js && node --check src/tts.js && node --check src/tts-config.js && node --check public/app.js"
+    "check": "node --check bin/cutpot-cli.js && node --check src/cli.js && node --check src/server.js && node --check src/render.js && node --check src/project.js && node --check src/tts.js && node --check src/tts-config.js && node --check public/app.js && node --check public/timeline.js && node --check public/project-io.js && node --check src/project-file.js && node --check src/pipeline.js && node --check src/generation.js && node --check public/pipeline.js"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }

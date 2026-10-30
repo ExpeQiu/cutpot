@@ -60,3 +60,39 @@ test('cancellation terminates the worker process',async()=>{
   const task=run(process.execPath,['-e','setTimeout(()=>{},10000)'],{signal:controller.signal});
   controller.abort();await assert.rejects(task,e=>e.name==='AbortError');
 });
+
+test('real FFmpeg: source trim, fast/slow motion, four transitions and long narration share exact timing',async t=>{
+  try{await run('ffmpeg',['-version']);}catch{t.skip('FFmpeg is not installed');return;}
+  const root=await mkdtemp(path.join(os.tmpdir(),'cutpot-edits-'));
+  try{
+    const video=path.join(root,'red-blue.mp4'),green=path.join(root,'green.png'),blue=path.join(root,'blue.png');
+    await run('ffmpeg',['-v','error','-y','-f','lavfi','-i','color=c=red:s=320x180:r=25:d=2','-f','lavfi','-i','color=c=blue:s=320x180:r=25:d=2','-f','lavfi','-i','sine=frequency=440:duration=4','-filter_complex','[0:v][1:v]concat=n=2:v=1:a=0[v]','-map','[v]','-map','2:a','-c:v','libx264','-c:a','aac',video]);
+    for(const [file,color] of [[green,'green'],[blue,'blue']])await run('ffmpeg',['-v','error','-y','-f','lavfi','-i',`color=c=${color}:s=320x180`,'-frames:v','1',file]);
+    const assets=await Promise.all([[video,'v'],[green,'g'],[blue,'b']].map(async([file,id])=>({id,path:file,name:path.basename(file),sha256:id,...await probe(file)})));
+    // Reuse the source's audio stream as a narration longer than the edited film.
+    assets.push({id:'voice',path:video,type:'audio',duration:4});
+    const clip=(assetId,duration,speed=1,transition=null)=>({id:randomUUID(),assetId,sourceIn:0,duration,speed,muted:false,subtitle:'',transition});
+    const p=validateProject({...defaultProject(),width:1280,height:720,narration:'voice',clips:[
+      {...clip('v',1.2,2,{type:'dissolve',duration:.2}),sourceIn:.4},
+      clip('g',.8,1,{type:'fadeblack',duration:.2}),
+      clip('v',.8,.25,{type:'fadewhite',duration:.2}),
+      clip('b',.8,1,{type:'wipeleft',duration:.2}),clip('v',.8,4),
+    ]},assets);
+    const job={id:randomUUID()};await renderProject(p,assets,root,job,new AbortController().signal);
+    assert.equal(job.status,'completed');
+    const out=path.join(root,'exports',job.id,'film.mp4');
+    const data=JSON.parse(await run('ffprobe',['-v','error','-count_frames','-show_streams','-show_format','-of','json',out]));
+    assert.equal(Number(data.format.duration),3.6);
+    assert.equal(Number(data.streams.find(s=>s.codec_type==='video').nb_read_frames),90);
+    await run('ffmpeg',['-v','error','-i',out,'-f','null','-']);
+    async function rgb(seconds){
+      const file=path.join(root,`pixel-${seconds}.raw`);
+      await run('ffmpeg',['-v','error','-y','-ss',String(seconds),'-i',out,'-frames:v','1','-vf','scale=1:1,format=rgb24','-f','rawvideo',file]);
+      return [...await readFile(file)];
+    }
+    const red=await rgb(.1),spedBlue=await rgb(.9),mixed=await rgb(1.1);
+    assert.ok(red[0]>180&&red[2]<50,'source trim starts in the red range');
+    assert.ok(spedBlue[2]>180&&spedBlue[0]<50,'2x playback must reach the blue source range');
+    assert.ok(mixed[1]>20&&mixed[2]>20,'dissolve must contain both adjoining pictures');
+  }finally{await rm(root,{recursive:true,force:true});}
+});

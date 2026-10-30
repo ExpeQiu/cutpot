@@ -21,7 +21,7 @@ async function cli(args,base,expected=0){
 
 test('CLI help, unknown options and error outputs are script-friendly',async()=>{
   assert.match((await cli(['--help'])).help,/compose FILE/);
-  assert.equal((await cli(['--version'])).version,'0.8.0');
+  assert.equal((await cli(['--version'])).version,'0.9.0');
   assert.match((await cli(['not-a-command'],null,1)).error,/未知命令/);
   assert.match((await cli(['clip','edit','1','--frobnicate'],null,1)).error,/Unknown option/);
   assert.match((await cli(['status','--url','https://example.com'],null,1)).error,/仅支持/);

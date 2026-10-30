@@ -11,11 +11,11 @@ test('frame quantization and SRT use the same integer frame clock',()=>{
   assert.deepEqual(v.clips.map(c=>c.duration),[1.52,1.48]);
   assert.equal(subtitles(v),'1\n00:00:00,000 --> 00:00:01,520\n第一句\n\n2\n00:00:01,520 --> 00:00:03,000\n第二句\n');
 });
-test('reject missing assets, source overruns, invalid IDs and truncated narration',()=>{
+test('reject missing assets, source overruns and invalid IDs; narration may be trimmed at export',()=>{
   for(const c of [clip('missing'),{...clip('a',3),sourceIn:3},{...clip('a'),id:'"><img src=x onerror=alert(1)>'},clip('a',NaN)]){
     assert.throws(()=>validateProject({...defaultProject(),clips:[c]},assets));
   }
-  assert.throws(()=>validateProject({...defaultProject(),clips:[clip('a')],narration:'voice'},assets),/旁白长于/);
+  assert.equal(validateProject({...defaultProject(),clips:[clip('a')],narration:'voice'},assets).narration,'voice');
 });
 test('arrange sorts numbered shots while retaining locked slots',()=>{
   const p={...defaultProject(),clips:[clip('a'),{...clip('b'),locked:true},clip('c')]};

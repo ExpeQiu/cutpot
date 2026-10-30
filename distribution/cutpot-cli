@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+cutpot_location="${BASH_SOURCE[0]}"
+while [ -L "$cutpot_location" ]; do
+  cutpot_base="$(cd -P "$(dirname "$cutpot_location")" && pwd)"
+  cutpot_location="$(readlink "$cutpot_location")"
+  case "$cutpot_location" in /*) ;; *) cutpot_location="$cutpot_base/$cutpot_location" ;; esac
+done
+cutpot_base="$(cd -P "$(dirname "$cutpot_location")" && pwd)"
+exec node "$cutpot_base/bin/cutpot-cli.js" "$@"

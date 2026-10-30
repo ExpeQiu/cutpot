@@ -8,10 +8,11 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { defaultProject, validateProject, autoArrange } from './project.js';
+import { timelineDuration } from '../public/timeline.js';
 import { probe, run } from './render.js';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const version = '0.8.0';
+const version = '0.9.0';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const definitions = {
   json:{type:'boolean',short:'j'}, help:{type:'boolean',short:'h'}, version:{type:'boolean',short:'v'},
@@ -325,6 +326,7 @@ async function speechCommand(base,command,args,options){
   if(options.output)result.output=await downloadSpeech(base,complete,options);
   if(options.attach){
     try{
+      if(!state.project.clips.length||complete.duration>timelineDuration(state.project)+.05)throw new Error('旁白长于成片，请先增加画面时长再设置旁白');
       if(!state.assets.some(a=>a.id===complete.asset.id))state.assets.push(complete.asset);
       await saveProject(base,state,{...state.project,narration:complete.asset.id});result.attached=true;
     }catch(e){throw new Error(`配音已生成${result.output?`（${result.output}）`:''}，素材 ID ${complete.asset.id}；设置旁白失败：${e.message}`);}
